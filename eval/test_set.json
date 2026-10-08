@@ -1,0 +1,152 @@
+{
+  "_note": "Expected facts come from tools/data/mock_market_data.json. reference_time pins 'now' so freshness results are reproducible.",
+  "reference_time": "2026-09-30T12:00:00Z",
+  "cases": [
+    {
+      "id": "aapl_trend",
+      "request": {"symbol": "AAPL", "question": "What was the most recent closing price and how has the stock trended over the last month?"},
+      "expect_status": ["ok"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-29", "value": 246.10},
+        {"label_contains": "Close-to-close change 2026-08-31 to 2026-09-29", "value": 7.28},
+        {"label_contains": "Trading days in price window", "value": 21}
+      ],
+      "required_flags": [],
+      "forbidden_flags": ["TIMESTAMP_DISCREPANCY", "STALE_DATA", "PRICE_SOURCES_DISAGREE"],
+      "expect_discrepancy": false,
+      "expect_answer": true
+    },
+    {
+      "id": "aapl_announcements",
+      "request": {"symbol": "aapl", "question": "What has the company announced recently?"},
+      "expect_status": ["ok"],
+      "expected_facts": [
+        {"label_contains": "Announcement on 2026-09-18", "value": "Apple schedules Q4 FY2026 earnings call for October 29, 2026"},
+        {"label_contains": "Number of announcements in the last 30d", "value": 3}
+      ],
+      "required_flags": [],
+      "forbidden_flags": ["TIMESTAMP_DISCREPANCY"],
+      "expect_discrepancy": false,
+      "expect_answer": true
+    },
+    {
+      "id": "aapl_specific_date",
+      "request": {"symbol": "AAPL", "question": "What did the stock close at on 15 September 2026?", "date": "2026-09-15"},
+      "expect_status": ["ok"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-15", "value": 238.40},
+        {"label_contains": "Volume on 2026-09-15", "value": 47930000}
+      ],
+      "required_flags": [],
+      "forbidden_flags": ["PRICE_SOURCES_DISAGREE", "STALE_DATA", "TIMESTAMP_DISCREPANCY"],
+      "expect_discrepancy": false,
+      "expect_answer": true
+    },
+    {
+      "id": "aapl_out_of_scope",
+      "request": {"symbol": "AAPL", "question": "What is Apple's P/E ratio and what is a fair price target?"},
+      "expect_status": ["ok", "partial"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-29", "value": 246.10}
+      ],
+      "required_flags": [],
+      "forbidden_flags": [],
+      "expect_discrepancy": false,
+      "expect_answer": true
+    },
+    {
+      "id": "msft_timestamp_skew",
+      "request": {"symbol": "MSFT", "question": "Summarise the latest price action and news."},
+      "expect_status": ["ok", "partial"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-29", "value": 511.55},
+        {"label_contains": "Announcement on 2026-09-02", "value": "Microsoft declares quarterly dividend of $0.91 per share"}
+      ],
+      "required_flags": ["TIMESTAMP_DISCREPANCY", "STALE_DATA"],
+      "forbidden_flags": ["PRICE_SOURCES_DISAGREE"],
+      "expect_discrepancy": true,
+      "expect_answer": true,
+      "max_confidence": "medium"
+    },
+    {
+      "id": "tsla_stale_prices",
+      "request": {"symbol": "TSLA", "question": "Is the stock going up or down lately?"},
+      "expect_status": ["ok", "partial"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-22", "value": 312.40},
+        {"label_contains": "Close-to-close change 2026-08-24 to 2026-09-22", "value": -10.28}
+      ],
+      "required_flags": ["STALE_DATA", "TIMESTAMP_DISCREPANCY"],
+      "forbidden_flags": [],
+      "expect_discrepancy": true,
+      "expect_answer": true,
+      "max_confidence": "medium"
+    },
+    {
+      "id": "nvda_conflicting_prices",
+      "request": {"symbol": "NVDA", "question": "What is the current share price?"},
+      "expect_status": ["ok", "partial"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-29 (quote feed)", "value": 171.20},
+        {"label_contains": "Close price on 2026-09-29 (history feed)", "value": 181.40}
+      ],
+      "required_flags": ["PRICE_SOURCES_DISAGREE"],
+      "forbidden_flags": [],
+      "expect_discrepancy": false,
+      "expect_answer": true,
+      "max_confidence": "low"
+    },
+    {
+      "id": "rwlk_direction_forecast",
+      "request": {"symbol": "RWLK", "question": "Will the stock go up or down over the next week?"},
+      "expect_status": ["ok", "partial"],
+      "expected_facts": [
+        {"label_contains": "Close price on 2026-09-29", "value": 39.31},
+        {"label_contains": "Forecast confidence", "value": "low"}
+      ],
+      "required_flags": [],
+      "forbidden_flags": ["FORECAST_UNAVAILABLE"],
+      "expect_discrepancy": false,
+      "expect_answer": true,
+      "expect_forecast": true,
+      "max_forecast_confidence": "low"
+    },
+    {
+      "id": "unknown_symbol",
+      "request": {"symbol": "ZZZZ", "question": "How is this stock doing?"},
+      "expect_status": ["error"],
+      "expected_facts": [],
+      "required_flags": ["UNKNOWN_SYMBOL"],
+      "forbidden_flags": [],
+      "expect_discrepancy": false,
+      "expect_answer": false,
+      "expect_no_llm_calls": true,
+      "expect_no_facts": true
+    },
+    {
+      "id": "malformed_price_feed",
+      "request": {"symbol": "BADF", "question": "What is the latest price?"},
+      "expect_status": ["partial"],
+      "expected_facts": [
+        {"label_contains": "Announcement on 2026-09-21", "value": "Badfeed Test Corp files routine quarterly report"}
+      ],
+      "required_flags": ["MALFORMED_RESPONSE"],
+      "forbidden_flags": [],
+      "expect_discrepancy": false,
+      "expect_answer": true,
+      "expect_no_price_facts": true
+    },
+    {
+      "id": "source_timeout",
+      "request": {"symbol": "SLOW", "question": "What is the latest price?"},
+      "expect_status": ["insufficient_data"],
+      "expected_facts": [],
+      "required_flags": ["TOOL_TIMEOUT"],
+      "forbidden_flags": [],
+      "expect_discrepancy": false,
+      "expect_answer": false,
+      "expect_no_llm_calls": true,
+      "expect_no_facts": true
+    }
+  ]
+}

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kairo Markets</title>
+<meta name="theme-color" content="#0d1118">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Cpath d='M10 8v16M22 8l-8 8 8 8' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/app.css">
+<script>try { document.documentElement.dataset.theme = JSON.parse(localStorage.getItem("kairo-theme")) || "dark"; } catch (e) {}</script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/explore" aria-label="Kairo Markets home">
+    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--brand)"/>
+      <path d="M10 8v16M22 8l-8 8 8 8" stroke="#fff" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span class="brand-word">kairo</span>
+  </a>
+  <nav class="nav" id="nav" aria-label="Main">
+    <a href="#/explore" data-v="explore"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg>Explore</a>
+    <a href="#/markets" data-v="markets"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 17l5-6 4 3 6-8 3 3"/><path d="M3 21h18"/></svg>Stocks</a>
+    <a href="#/terminal" data-v="terminal"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 4v3M7 17v3M17 4v6M17 18v2"/><rect x="5" y="7" width="4" height="10" rx="1"/><rect x="15" y="10" width="4" height="8" rx="1"/></svg>Terminal</a>
+    <a href="#/funds" data-v="funds"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>Funds</a>
+    <a href="#/portfolio" data-v="portfolio"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12A9 9 0 1 1 12 3v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/></svg>Portfolio</a>
+    <a href="#/screener" data-v="screener"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>Screener</a>
+    <a href="#/news" data-v="news"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/></svg>News</a>
+    <a href="#/alerts" data-v="alerts"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Alerts<span class="count" id="alertCount" hidden></span></a>
+  </nav>
+  <div class="search">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" autocomplete="off" spellcheck="false" placeholder="Search stocks, indices, crypto" aria-label="Search symbol">
+    <kbd>Ctrl K</kbd>
+    <div class="suggest" id="suggest"></div>
+  </div>
+  <div class="top-right">
+    <span class="feed" id="feed"><i></i><span id="feedTxt">Connecting</span></span>
+    <button class="icon-btn" id="themeBtn" aria-label="Toggle light / dark theme" title="Toggle theme">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
+<div class="strip" id="strip" aria-label="Market indices"></div>
+
+<!-- ================================================================ explore -->
+<div class="view term" id="view-terminal" hidden>
+  <div class="term-top">
+    <div class="term-search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="termSearch" placeholder="Search stocks, indices" autocomplete="off" spellcheck="false" aria-label="Chart symbol">
+      <div class="term-suggest" id="termSuggest" hidden></div></div>
+    <div class="term-px" id="termPx"></div>
+    <span class="chip" id="termLive" hidden></span>
+    <div class="term-trade"><button class="term-buy" id="termBuy" title="Buy (B)">Buy</button><button class="term-sell" id="termSell" title="Sell (S)">Sell</button>
+      <span class="mode-badge" id="termMode" hidden></span></div>
+    <div class="term-sp"></div>
+    <div class="seg" id="termIntervals" aria-label="Candle interval"></div>
+    <button class="term-btn" id="termType" title="Show line" aria-label="Candles or line"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 3v4M7 17v4M17 3v2M17 15v6"/><rect x="4.5" y="7" width="5" height="10" rx="1" fill="currentColor" fill-opacity=".25"/><rect x="14.5" y="5" width="5" height="10" rx="1"/></svg></button>
+    <div class="term-ind"><button class="term-btn wide" id="termIndBtn"><i>ƒ</i> Indicators <b id="termIndCount"></b></button><div class="term-menu" id="termIndMenu" hidden></div></div>
+    <button class="term-btn wide term-chainbtn" id="termChainBtn">Option chain</button>
+    <button class="term-btn wide term-chainbtn" id="termTradeBtn">Positions</button>
+    <button class="term-btn" id="termShot" title="Download chart image" aria-label="Download chart image"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+    <button class="term-btn" id="termFull" title="Full screen" aria-label="Full screen"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+  </div>
+  <div class="term-body">
+    <div class="term-tools" id="termTools" aria-label="Drawing tools"></div>
+    <div class="term-main">
+      <div class="term-legend" id="termLegend"></div>
+      <div class="term-hint" id="termHint" hidden></div>
+      <div class="term-chart" id="termChart"></div>
+      <div class="term-measure" id="termMeasure" hidden></div>
+      <div class="term-status" id="termStatus" hidden></div>
+      <div class="term-chainfull" id="termChainFull" hidden></div>
+      <div class="term-bottom">
+        <div class="term-spans" id="termSpans"></div>
+        <div class="term-sp"></div>
+        <span class="muted num" id="termClock"></span>
+        <div class="term-scale" id="termScale"><button data-m="pct" title="Percent scale">%</button><button data-m="log" title="Logarithmic scale">log</button></div>
+      </div>
+    </div>
+    <aside class="term-panel">
+      <div class="term-tabs" id="termTabs"><button data-p="chain">Chain</button><button data-p="trade">Trade</button><button data-p="watch">Watchlist</button><button data-p="details">Details</button></div>
+      <div class="term-panel-body" id="termPanelBody"></div>
+    </aside>
+  </div>
+</div>
+
+<div class="view page-wrap" id="view-explore" hidden>
+  <div class="page">
+    <div class="page-h">
+      <div><h1 class="page-title">Explore</h1><div class="page-sub" id="exSub">&nbsp;</div></div>
+      <div class="actions"><select class="uni-select" id="exUniverse" aria-label="Market to explore"></select></div>
+    </div>
+    <div class="ex-grid">
+      <div class="ex-main">
+        <div class="card" id="exMovers"></div>
+        <div class="card" id="exSectors"></div>
+      </div>
+      <div class="ex-rail">
+        <div class="card" id="exInvest"></div>
+        <div class="card" id="exBreadth"></div>
+        <div class="card" id="exScreens"></div>
+      </div>
+    </div>
+    <div class="card ex-news" id="exNews" hidden></div>
+    <footer>Prices: Yahoo Finance (unofficial; may be delayed). Screens and outlooks are statistical, not recommendations. Kairo is not investment advice.</footer>
+  </div>
+</div>
+
+<!-- ================================================================ markets -->
+<div class="view" id="view-markets">
+  <div class="shell">
+    <aside>
+      <div class="wl-head"><span class="label">Watchlist</span><span class="label" id="wlCount"></span></div>
+      <ul class="wl" id="wl"></ul>
+    </aside>
+    <main>
+      <section class="inst">
+        <div>
+          <div class="inst-id"><span id="iLogo"></span><span class="inst-sym" id="iSym">—</span><span class="chip" id="iExch" hidden></span><span class="venue" id="iVenue" role="group" aria-label="Exchange" hidden></span><span class="chip" id="iState" hidden></span></div>
+          <div class="inst-name" id="iName">&nbsp;</div>
+          <div class="quote"><span class="big-px num" id="iPx">—</span><span class="big-chg num" id="iChg"></span></div>
+          <div class="asof num" id="iAsof">&nbsp;</div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="alertBtn" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Set alert</button>
+          <button class="btn" id="watchBtn" hidden></button>
+        </div>
+      </section>
+      <nav class="tabs" id="mTabs" role="tablist">
+        <button data-tab="overview" class="on" role="tab">Overview</button>
+        <button data-tab="outlook" role="tab">Outlook</button>
+        <button data-tab="research" role="tab">Research</button>
+      </nav>
+      <section id="tab-overview">
+        <div class="card">
+          <div class="card-h">
+            <div class="chart-ctl">
+              <div class="seg" id="rangeSeg"><button data-r="1D" class="on">1D</button><button data-r="1W">1W</button><button data-r="1M">1M</button><button data-r="3M">3M</button><button data-r="6M">6M</button><button data-r="1Y">1Y</button><button data-r="5Y">5Y</button><button data-r="ALL">All</button></div>
+              <button class="chart-type" id="chartType" type="button" title="Show candles" aria-label="Show candles" aria-pressed="false">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 3v4M7 17v4M17 3v2M17 15v6"/><rect x="4.5" y="7" width="5" height="10" rx="1" fill="currentColor" fill-opacity=".25"/><rect x="14.5" y="5" width="5" height="10" rx="1"/></svg>
+              </button>
+            </div>
+            <div class="toggles" id="overlays" hidden>
+              <button class="toggle" data-o="sma20"><i style="background:#e9a23b"></i>SMA 20</button>
+              <button class="toggle" data-o="sma50"><i style="background:#4ea1ff"></i>SMA 50</button>
+              <button class="toggle" data-o="sma200"><i style="background:#c27bff"></i>SMA 200</button>
+              <button class="toggle" data-o="bb"><i style="background:var(--faint)"></i>Bollinger</button>
+            </div>
+          </div>
+          <div class="chart" id="chart"><div class="empty">Select a symbol to load its chart.</div></div>
+        </div>
+        <div class="row">
+          <div class="card"><div class="card-h"><span class="card-t">Today</span></div><div class="stats" id="stats"></div></div>
+          <div class="card"><div class="card-h"><span class="card-t">Trades</span><span class="muted" style="font-size:12px" id="tapeNote"></span></div><div class="tape num" id="tape"></div></div>
+        </div>
+        <div class="card rs-card" id="fundCard" hidden></div>
+        <div class="card rs-card" id="finCard" hidden></div>
+        <div class="rs-row"><div class="card rs-card" id="scoreCard" hidden></div><div class="card rs-card" id="shpCard" hidden></div></div>
+        <div class="card rs-card" id="peerCard" hidden></div>
+        <div class="card about" id="about" hidden></div>
+      </section>
+      <section id="tab-outlook" hidden></section>
+      <section id="tab-research" hidden>
+        <div class="card">
+          <div class="card-h"><span class="card-t">Research note</span><span class="muted" style="font-size:12px" id="modelTag"></span></div>
+          <form class="ask" id="askForm">
+            <input id="askQ" placeholder="Ask about this stock — trend, news, risks, next-week outlook" value="How has the stock moved this month and what is in the news?">
+            <select id="askPeriod" aria-label="News period"><option value="7d">News 7d</option><option value="30d" selected>News 30d</option><option value="90d">News 90d</option></select>
+            <button class="btn primary" id="askBtn">Generate</button>
+          </form>
+          <div class="chips" id="prompts" style="margin-top:10px"></div>
+        </div>
+        <div id="research"></div>
+      </section>
+      <footer>Market data: Yahoo Finance (unofficial; quotes may be delayed by the exchange). Outlooks are statistical estimates from price history. Kairo is not investment advice.</footer>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ funds -->
+<div class="view page-wrap" id="view-funds" hidden>
+  <div class="page">
+    <div class="page-h">
+      <div><a class="btn sm ghost" id="fundsBack" href="#/funds" hidden>← All funds</a><h1 class="page-title" id="fundsTitle">Mutual funds</h1>
+        <div class="page-sub">Every Indian mutual fund, from official AMFI NAVs — returns, category rank, risk and real SIP outcomes.</div></div>
+      <div class="actions"><button class="btn" id="compareBtn" hidden>Compare</button></div>
+    </div>
+    <div id="fundsBody"></div>
+  </div>
+</div>
+
+<!-- ================================================================ portfolio -->
+<div class="view page-wrap" id="view-portfolio" hidden>
+  <div class="page">
+    <div class="page-h">
+      <div><h1 class="page-title">Portfolio</h1><div class="page-sub">Live P&amp;L, XIRR, capital-gains estimate and a health check — stored only on this computer.</div></div>
+      <div class="actions"><div class="seg" id="pfCurSeg" hidden></div><button class="btn" id="importBtn">Import CSV</button><button class="btn primary" id="addTradeBtn">Add trade</button></div>
+    </div>
+    <div id="portfolioBody"></div>
+  </div>
+</div>
+
+<!-- ================================================================ screener -->
+<div class="view page-wrap" id="view-screener" hidden>
+  <div class="page">
+    <div class="page-h"><div><h1 class="page-title">Screener</h1><div class="page-sub">Scan a market for momentum, trend and over-extension. Click any row for its chart.</div></div></div>
+    <div class="filters"><select class="uni-select" id="scrUniverse" aria-label="Stocks to scan"></select><input class="input" id="scrSearch" placeholder="Filter by name or symbol" aria-label="Filter results"></div>
+    <div class="chips" id="scrPresets" style="margin-bottom:14px"></div>
+    <div id="scrBody"><div class="card"><div class="skeleton" style="height:240px"></div></div></div>
+  </div>
+</div>
+
+<!-- ================================================================ news -->
+<div class="view page-wrap" id="view-news" hidden>
+  <div class="page" style="max-width:860px">
+    <div class="page-h">
+      <div><h1 class="page-title">News</h1><div class="page-sub">Headlines for the stocks you own and follow, newest first.</div></div>
+      <div class="actions"><div class="seg" id="newsScope"><button data-s="holdings">Holdings</button><button data-s="watchlist">Watchlist</button><button data-s="both">Both</button></div>
+        <div class="seg" id="newsPeriod"><button data-p="7d">7D</button><button data-p="30d">30D</button></div></div>
+    </div>
+    <div id="newsBody"></div>
+    <div id="newsReader" hidden></div>
+  </div>
+</div>
+
+<!-- ================================================================ alerts -->
+<div class="view page-wrap" id="view-alerts" hidden>
+  <div class="page" style="max-width:960px">
+    <div class="page-h">
+      <div><h1 class="page-title">Alerts</h1><div class="page-sub" id="alertsSub">Get notified when a price or day move crosses your level.</div></div>
+      <div class="actions"><button class="btn" id="notifyBtn" hidden>Enable desktop notifications</button><button class="btn primary" id="newAlertBtn">New alert</button></div>
+    </div>
+    <div id="alertsBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+eval/results/*.json
+data/
+*.db
+*.db-journal
+*.db-wal
+.env.*
+!.env.example

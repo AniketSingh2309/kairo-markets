@@ -4,6 +4,10 @@ import { $, esc, api, store, fmt, money, pctTxt, tone, compact, splitSym, naviga
   INDICES, onTabSleep, onRoute, app, modal, toast } from "./core.js";
 import { getWatchlist } from "./markets.js";
 import { openTicket, showTradePanel, hideTradePanel, refreshStatus, tradable, placeBasket, saveBasket } from "./trading.js";
+import { sma, ema, bollinger, rsi, macd, vwap, dayKey } from "./indicators.js";
+import { initKai, kaiTick, kaiEvent, kaiOn, setKai, kaiPlace, kaiHide } from "./teacher.js";
+import { initChartOrders, drawOrders, refreshOrders, tradeAtPrice } from "./chartorders.js";
+import { initReplay, startPick, cancelPick, pickAt, replaying, picking, replayTime, stopReplay } from "./replay.js";
 
 const LWC_URL = "/static/vendor/lightweight-charts.mjs";
 const INTERVALS = [["1m", "1m"], ["5m", "5m"], ["15m", "15m"], ["1h", "1h"], ["1D", "1D"]];
@@ -21,6 +25,7 @@ const TOOLS = [
   ["trend", "Trend line", '<path d="M4 19 20 5"/><circle cx="4" cy="19" r="2"/><circle cx="20" cy="5" r="2"/>'],
   ["hline", "Horizontal line", '<path d="M3 12h18"/><circle cx="12" cy="12" r="2"/>'],
   ["measure", "Measure", '<path d="M4 20 20 4M7 20l-3-3M20 7l-3-3M9 15l2 2M13 11l2 2"/>'],
+  ["trade", "Trade at a price: click the chart to buy, sell or set an alert there", '<circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10.5c0-1.4 5-1.4 5 0 0 2.5-5 1-5 3.2 0 1.4 5 1.4 5 0"/>'],
 ];
 
 const T = {
@@ -35,44 +40,6 @@ const C = { und: store.get("kairo-chain-und", "NIFTY"), expiry: null, data: null
   tab: store.get("kairo-ocf-tab", "chain"), view: store.get("kairo-ocf-view", "prices"), hist: null };
 const isOpt = (s) => (s || "").startsWith("OPT:");
 const SESSION_ANCHOR = 13500;  // 09:15 IST in seconds after UTC midnight: NSE candles start there
-
-// ------------------------------------------------------------------ indicators (pure)
-const sma = (v, n) => { const o = new Array(v.length).fill(null); let s = 0; for (let i = 0; i < v.length; i++) { s += v[i]; if (i >= n) s -= v[i - n]; if (i >= n - 1) o[i] = s / n; } return o; };
-const ema = (v, n) => { const o = new Array(v.length).fill(null), k = 2 / (n + 1); let e = null; for (let i = 0; i < v.length; i++) { if (i === n - 1) { e = v.slice(0, n).reduce((a, b) => a + b, 0) / n; } else if (i >= n) e = v[i] * k + e * (1 - k); if (i >= n - 1) o[i] = e; } return o; };
-function bollinger(v, n = 20, k = 2) {
-  const mid = sma(v, n), up = [], lo = [];
-  for (let i = 0; i < v.length; i++) {
-    if (mid[i] == null) { up.push(null); lo.push(null); continue; }
-    let s = 0; for (let j = i - n + 1; j <= i; j++) s += (v[j] - mid[i]) ** 2;
-    const sd = Math.sqrt(s / n); up.push(mid[i] + k * sd); lo.push(mid[i] - k * sd);
-  }
-  return { mid, up, lo };
-}
-function rsi(v, n = 14) {
-  const o = new Array(v.length).fill(null); let g = 0, l = 0;
-  for (let i = 1; i < v.length; i++) {
-    const d = v[i] - v[i - 1], up = Math.max(d, 0), dn = Math.max(-d, 0);
-    if (i <= n) { g += up; l += dn; if (i === n) { g /= n; l /= n; o[i] = l === 0 ? 100 : 100 - 100 / (1 + g / l); } }
-    else { g = (g * (n - 1) + up) / n; l = (l * (n - 1) + dn) / n; o[i] = l === 0 ? 100 : 100 - 100 / (1 + g / l); }
-  }
-  return o;
-}
-function macd(v) {
-  const f = ema(v, 12), s = ema(v, 26), line = v.map((_, i) => (f[i] != null && s[i] != null ? f[i] - s[i] : null));
-  const start = line.findIndex((x) => x != null), sig = new Array(v.length).fill(null);
-  if (start >= 0) { const e = ema(line.slice(start), 9); e.forEach((x, i) => (sig[start + i] = x)); }
-  return { line, sig, hist: line.map((x, i) => (x != null && sig[i] != null ? x - sig[i] : null)) };
-}
-const dayKey = (t) => { const d = new Date(t * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
-function vwap(bars) {
-  const o = []; let pv = 0, vv = 0, key = "";
-  for (const b of bars) {
-    const k = dayKey(b.time); if (k !== key) { key = k; pv = 0; vv = 0; }
-    const tp = (b.high + b.low + b.close) / 3; pv += tp * (b.vol || 0); vv += b.vol || 0;
-    o.push(vv > 0 ? pv / vv : null);
-  }
-  return o;
-}
 
 // ------------------------------------------------------------------ chart
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -140,6 +107,7 @@ function buildChart() {
   if (panes.length > 1) { panes[0].setStretchFactor(4); panes.slice(1).forEach((p) => p.setStretchFactor(1)); }
   chart.subscribeCrosshairMove(onCrosshair);
   chart.subscribeClick(onChartClick);
+  chart.timeScale().subscribeVisibleLogicalRangeChange(kaiPlace);  // keep Kai's tip pinned to its candle
   applyData(true);
   if (keep) chart.timeScale().setVisibleLogicalRange(keep);
 }
@@ -167,7 +135,7 @@ function applyData(full = false) {
     setSeriesData(T.series.macd, m.line, bars); setSeriesData(T.series.macdS, m.sig, bars);
     T.series.macdH.setData(bars.map((b, i) => (m.hist[i] == null ? { time: b.time } : { time: b.time, value: m.hist[i], color: m.hist[i] >= 0 ? UP + "aa" : DN + "aa" })));
   }
-  if (full) { drawDrawings(); updateLegend(); }
+  if (full) { drawDrawings(); drawKaiLevels(); drawOrders(); updateLegend(); }
 }
 
 // ------------------------------------------------------------------ data + live
@@ -190,6 +158,11 @@ async function loadBars() {
   buildChart();
   if (T.span) applySpan(T.span); else T.chart?.timeScale().setVisibleLogicalRange({ from: T.bars.length - 150, to: T.bars.length + 8 });
   renderStatus(); renderHeader(); renderDetails();
+  refreshOrders();
+  if (T.replayAfterLoad && T.bars.length) { T.replayAfterLoad = false; startPick(); }
+  if (!tradable(sym)) kaiEvent("index");
+  if (iv === "1m") kaiEvent("1m");
+  kaiTick();
 }
 
 /** Ticks -> candles, buckets aligned to the 09:15 IST session start (so 1h candles read 9:15, 10:15, ...). */
@@ -222,7 +195,7 @@ async function loadOption(sym, iv) {
 
 /** Fold a trade into the current bar, or open the next bar when its time window has started. */
 function onTrade(price, tSec, dayVolume) {
-  if (!T.bars.length || !price) return;
+  if (!T.bars.length || !price || replaying()) return;
   const size = BAR_S[T.interval], last = T.bars[T.bars.length - 1];
   let vol = 0;
   if (dayVolume != null) { if (T.dayVol != null && dayVolume >= T.dayVol) vol = dayVolume - T.dayVol; T.dayVol = dayVolume; }
@@ -237,7 +210,7 @@ function onTrade(price, tSec, dayVolume) {
   if (T.series.main) T.series.main.update(T.type === "candle" ? { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close } : { time: b.time, value: b.close });
   if (T.series.vol) T.series.vol.update({ time: b.time, value: b.vol || 0, color: ((b.close >= b.open ? css("--up") : css("--down")) || "#888") + "66" });
   clearTimeout(T.liveTimer); T.liveTimer = setTimeout(() => applyData(false), 1500);  // indicators: at most every 1.5 s
-  updateLegend(); renderHeader();
+  updateLegend(); renderHeader(); kaiTick();
 }
 
 function startStream() {
@@ -246,8 +219,8 @@ function startStream() {
   if (isOpt(T.sym)) {  // option contracts: NSE's trade series, refreshed while the market is open
     const sym = T.sym;
     T.optTimer = setInterval(async () => {
-      if (T.sym !== sym || !T.opt?.market_open || !T.chart) return;
-      try { await fetchOption(sym, T.interval); applyData(false); updateLegend(); renderHeader(); renderDetails(); } catch { /* keep the last chart */ }
+      if (T.sym !== sym || !T.opt?.market_open || !T.chart || replaying()) return;
+      try { await fetchOption(sym, T.interval); applyData(false); updateLegend(); renderHeader(); renderDetails(); kaiTick(); } catch { /* keep the last chart */ }
     }, 5000);
     return;
   }
@@ -258,6 +231,7 @@ function startStream() {
     const d = JSON.parse(e.data);
     T.day = d; T.dayVol = d.volume ?? null;
     renderHeader(); renderDetails();
+    kaiTick();  // Kai needs to know whether the market is open before it reads the chart
   });
   es.addEventListener("tick", (e) => {
     if (T.sym !== sym) return;
@@ -291,10 +265,21 @@ function drawDrawings() {
     }
   }
 }
+/** Kai's support/resistance and plan levels, as labelled price lines (kept across chart rebuilds). */
+function drawKaiLevels() {
+  if (!T.series.main) return;
+  (T.series.kai || []).forEach((l) => { try { T.series.main.removePriceLine(l); } catch { /* gone with a rebuild */ } });
+  const col = { support: css("--up"), resistance: css("--down"), entry: css("--brand"), stop: css("--down"), target: css("--up") };
+  T.series.kai = (T.kaiLevels || []).filter((l) => l.price != null && isFinite(l.price)).map((l) => T.series.main.createPriceLine({
+    price: l.price, color: col[l.kind] || css("--muted"), lineWidth: 1, lineStyle: l.kind === "support" || l.kind === "resistance" ? 2 : 1,
+    axisLabelVisible: true, title: `Kai ${l.label}` }));
+}
 function onChartClick(param) {
+  if (picking() && param.point) { const t = param.time ?? T.chart.timeScale().coordinateToTime(param.point.x); if (t != null) pickAt(t); return; }
   if (!param.point || T.tool === "cross" || !T.series.main) return;
   const price = T.series.main.coordinateToPrice(param.point.y), time = param.time ?? T.chart.timeScale().coordinateToTime(param.point.x);
   if (price == null || time == null) return;
+  if (T.tool === "trade") { const box = $("#termChart"); tradeAtPrice(price, param.point.x + box.offsetLeft, param.point.y + box.offsetTop); setTool("cross"); return; }
   if (T.tool === "hline") { saveDrawings([...drawings(), { kind: "hline", p: price }]); drawDrawings(); setTool("cross"); return; }
   if (!T.pending) { T.pending = { t: time, p: price, x: param.point.x, y: param.point.y, logical: param.logical }; renderHint(); return; }
   const a = T.pending; T.pending = null;
@@ -322,7 +307,7 @@ function setTool(tool) {
 function renderHint() {
   const h = $("#termHint");
   const msg = { trend: T.pending ? "Click the second point" : "Click the first point of the line", measure: T.pending ? "Click the end point" : "Click the start point",
-    hline: "Click a price level" }[T.tool];
+    hline: "Click a price level", trade: "Click a price to buy, sell or set an alert there" }[T.tool];
   h.hidden = !msg; h.textContent = msg ? `${msg} · Esc to cancel` : "";
 }
 
@@ -341,11 +326,18 @@ function updateLegend(param) {
     ${bar.vol ? `<span class="muted">Vol ${compact(bar.vol)}</span>` : ""}`;
 }
 const onCrosshair = (param) => updateLegend(param.time != null ? param : null);
+/** Replay: the cursor candle's price, against the close of the session before it. */
+function replayDay() {
+  const last = T.bars[T.bars.length - 1]; if (!last) return {};
+  const prev = [...T.bars].reverse().find((b) => dayKey(b.time) !== dayKey(last.time));
+  return { price: last.close, previous_close: T.interval === "1D" ? T.bars[T.bars.length - 2]?.close : prev?.close };
+}
 /** Display name: indices by their name (NIFTY 50), everything else by ticker (RELIANCE). */
 const label = (sym) => (isOpt(sym) ? T.data?.name || sym.slice(4) : INDICES.find(([s]) => s === sym)?.[1] || splitSym(sym)[0]);
 
 function renderHeader() {
-  const d = (isOpt(T.sym) ? null : T.day) || {}, last = T.bars[T.bars.length - 1];
+  const last = T.bars[T.bars.length - 1];
+  const d = replaying() ? replayDay() : (isOpt(T.sym) ? null : T.day) || {};
   const price = d.price ?? last?.close, cur = d.currency || T.data?.currency;
   const prevClose = d.previous_close ?? T.data?.previous_close;
   const chg = d.change ?? (price != null && prevClose ? price - prevClose : null), pct = d.change_pct ?? (chg != null && prevClose ? (chg / prevClose) * 100 : null);
@@ -486,7 +478,7 @@ function renderChain() {
   else scroller.scrollTop = keep;
 }
 // ------------------------------------------------------------------ full option chain: chain / OI analysis / straddle
-const OCF_TABS = [["chain", "Chain"], ["oi", "OI analysis"], ["straddle", "Straddle"], ["strategy", "Strategy builder"]];
+const OCF_TABS = [["chain", "Chain"], ["oi", "OI analysis"], ["straddle", "Straddle"], ["wizard", "Wizard"], ["strategy", "Strategy builder"]];
 const vixTxt = (v) => (v ? `<span>India VIX <b>${fmt(v.value)}</b> <i class="${tone(v.change_pct)}">${v.change_pct != null ? pctTxt(v.change_pct) : ""}</i></span>` : "");
 const nz = (v, dp = 0) => (v == null || v === 0 ? "—" : fmt(v, dp));  // NSE sends 0 when it has no value (IV deep in the money)
 
@@ -510,6 +502,7 @@ function renderChainFull() {
   if (C.tab === "oi") { renderOi(box, top, d); return; }
   if (C.tab === "straddle") { renderStraddle(box, top, d); return; }
   if (C.tab === "strategy") { renderStrategy(box, top, d); return; }
+  if (C.tab === "wizard") { renderWizard(box, top, d); return; }
   const g = C.view === "greeks";
   const oiCell = (v, max, cls) => `<td class="num oi-cell"><i class="${cls}" style="width:${((v || 0) / max) * 100}%"></i><span>${v == null ? "—" : compact(v)}</span></td>`;
   const maxOi = Math.max(1, ...d.rows.flatMap((r) => [r.ce?.oi || 0, r.pe?.oi || 0]));
@@ -810,6 +803,96 @@ function sgChange(e) {
   sgQueue(250, true); sgBody();
 }
 
+// --- strategy wizard: a view ("NIFTY to 25,400 by expiry") -> ranked strategies, plus is premium cheap or dear?
+const W = { key: "", view: store.get("kairo-wz-view", "bullish"), target: null, res: null, err: null, iv: null, ctx: null, busy: false };
+const WZ_VIEWS = [["bullish", "Bullish ▲"], ["bearish", "Bearish ▼"], ["neutral", "Range-bound ↔"], ["volatile", "Big move ⇕"]];
+function renderWizard(box, top, d) {
+  const key = `${d.symbol}|${d.expiry}`;
+  if (W.key !== key) { W.key = key; W.res = null; W.err = null; W.iv = null; W.ctx = null; W.target = null; loadWizardInfo(d); }
+  if (box.dataset.wz === key && box.querySelector(".wz-wrap")) {
+    const tmp = document.createElement("div"); tmp.innerHTML = top;
+    box.querySelectorAll(":scope > .ocf-top, :scope > .ocf-stats").forEach((el) => el.remove());
+    box.prepend(...tmp.children);
+    return;
+  }
+  box.dataset.wz = key;
+  box.innerHTML = top + `<div class="oi-wrap wz-wrap"></div>`;
+  wzBody();
+}
+async function loadWizardInfo(d) {
+  const key = W.key, stock = /\.NS$/.test(d.yahoo || "");
+  const [iv, ctx] = await Promise.all([
+    api(`/options/iv?symbol=${encodeURIComponent(d.symbol)}`).catch(() => null),
+    stock ? api(`/india/calendar?symbols=${encodeURIComponent(d.symbol)}&days=${Math.max(1, Math.ceil(d.days_to_expiry || 7))}`).catch(() => null)
+      : api("/india/participants").catch(() => null)]);
+  if (W.key !== key) return;
+  W.iv = iv; W.ctx = ctx; wzBody();
+}
+async function wzRun() {
+  const d = C.data; if (!d) return;
+  W.busy = true; W.err = null; wzBody();
+  try { W.res = await api("/options/wizard", { method: "POST", body: { symbol: d.symbol, expiry: d.expiry, view: W.view, target: W.target || null } }); if (!W.target) W.target = W.res.target; }
+  catch (err) { W.res = null; W.err = err.message; }
+  W.busy = false; wzBody();
+}
+function wzInfoHtml() {
+  const iv = W.iv;
+  const ivHtml = iv ? `<div class="wz-iv"><div class="oi-cards">
+      <div><span class="muted">ATM implied vol</span><b class="num">${iv.atm_iv != null ? fmt(iv.atm_iv, 1) + "%" : "—"}</b><small class="muted">${esc(iv.expiry)}</small></div>
+      <div><span class="muted">Realised vol (20d / 60d)</span><b class="num">${iv.hv20 != null ? fmt(iv.hv20, 1) + "%" : "—"} / ${iv.hv60 != null ? fmt(iv.hv60, 1) + "%" : "—"}</b></div>
+      <div><span class="muted">IV ÷ realised</span><b class="num">${iv.iv_hv != null ? fmt(iv.iv_hv, 2) + "×" : "—"}</b></div>
+      <div><span class="muted">${iv.iv_rank != null ? "IV rank / percentile" : "India VIX rank (1y)"}</span><b class="num">${iv.iv_rank != null ? `${fmt(iv.iv_rank, 0)} / ${fmt(iv.iv_percentile, 0)}` : iv.vix?.rank != null ? `${fmt(iv.vix.rank, 0)} · VIX ${fmt(iv.vix.value, 1)}` : "—"}</b>
+        <small class="muted">${iv.iv_rank != null ? `${iv.iv_days} days of readings` : `IV history: ${iv.iv_days} of 20 days`}</small></div></div>
+      <p class="wz-verdict">${esc(iv.verdict)}</p></div>` : `<div class="skeleton" style="height:90px"></div>`;
+  let ctx = "";
+  if (W.ctx?.days?.[0]) {
+    const f = W.ctx.days[0].participants.FII;
+    if (f) ctx = `<p class="muted wz-ctx">FIIs are <b>${fmt(f.fut_long_pct, 1)}% long</b> index futures (${new Date(W.ctx.days[0].date + "T00:00:00").toLocaleDateString([], { day: "numeric", month: "short" })}). ${f.fut_long_pct < 25 ? "A crowded short: rallies can be sharp as they cover." : f.fut_long_pct > 70 ? "A crowded long." : ""}</p>`;
+  } else if (W.ctx?.items?.length) {
+    ctx = `<p class="wz-ctx tk-flag warn"><b>Before expiry:</b> ${W.ctx.items.map((x) => `${esc(x.purpose || x.subject)} on ${new Date(x.date + "T00:00:00").toLocaleDateString([], { day: "numeric", month: "short" })}`).join("; ")}. Events like results swing option prices (and IV) sharply.</p>`;
+  }
+  return ivHtml + ctx;
+}
+function wzResHtml() {
+  if (W.busy) return `<div class="skeleton" style="height:220px"></div>`;
+  if (W.err) return `<div class="muted oi-empty">${esc(W.err)}</div>`;
+  const r = W.res;
+  if (!r) return `<div class="muted wz-hint">Pick your view and a target, then find strategies. Each is priced from the live chain (1 lot per leg).</div>`;
+  const leg = (l) => `<span class="pill ${l.side === "BUY" ? "up" : "down"}">${l.side === "BUY" ? "B" : "S"} ${fmt(l.strike, l.strike % 1 ? 2 : 0)} ${l.kind}</span>`;
+  return `<div class="muted wz-hint">Spot ${fmt(r.spot)} · target <b>${fmt(r.target)}</b> · expected move by expiry ±${fmt(r.expected_move, 0)} (at ${fmt(r.vol_used, 1)}% IV) · lot ${fmt(r.lot_size, 0)}</div>
+    <div class="wz-list">${r.items.map((c, i) => `<div class="wz-card ${c.unlimited_risk || c.naked ? "risky" : ""}">
+      <div class="wz-h"><b>${i + 1}. ${esc(c.name)}</b>${c.unlimited_risk ? `<span class="chip bad">Unlimited risk</span>` : c.naked ? `<span class="chip bad">Naked short: very large risk</span>` : `<span class="chip good">Defined risk</span>`}</div>
+      <div class="wz-legs">${c.legs.map(leg).join("")}</div><p class="muted">${esc(c.about)}</p>
+      <div class="wz-nums"><span>At target <b class="num ${tone(c.at_target)}">${rupees(c.at_target)}</b></span><span>Max profit <b class="num up">${rupees(c.max_profit)}</b></span>
+        <span>Max loss <b class="num down">${rupees(c.max_loss)}</b></span><span>Chance of profit <b class="num">${c.pop != null ? fmt(c.pop, 0) + "%" : "—"}</b></span>
+        <span>${c.net_premium >= 0 ? "Credit" : "Debit"} <b class="num">${rupees(Math.abs(c.net_premium))}</b></span></div>
+      <button class="btn sm" data-wzopen="${i}">Open in builder</button></div>`).join("")}</div>
+    <div class="fine ocf-note">${esc(r.note)} A lesson tool, not advice: check liquidity (bid-ask) before trading any leg.</div>`;
+}
+function wzBody() {
+  const wrap = $("#termChainFull .wz-wrap"), d = C.data;
+  if (!wrap || !d) return;
+  wrap.innerHTML = `<div class="wz-top">${wzInfoHtml()}</div>
+    <div class="wz-form"><div class="seg">${WZ_VIEWS.map(([k, l]) => `<button data-wzview="${k}" class="${k === W.view ? "on" : ""}">${l}</button>`).join("")}</div>
+      <label class="wz-target">${W.view === "neutral" ? "Stays near" : W.view === "volatile" ? "From" : "Target by expiry"} <input type="number" step="1" id="wzTarget" value="${W.target ?? ""}" placeholder="${fmt(d.spot, 0)}"></label>
+      <button class="btn primary" data-wzgo>Find strategies</button></div>
+    <div class="wz-res">${wzResHtml()}</div>`;
+}
+function wzClick(e) {
+  const t = e.target;
+  const v = t.closest("[data-wzview]");
+  if (v) { W.view = v.dataset.wzview; store.set("kairo-wz-view", W.view); W.target = null; W.res = null; wzBody(); return; }
+  if (t.closest("[data-wzgo]")) { const x = Number($("#wzTarget")?.value); W.target = x > 0 ? x : null; wzRun(); return; }
+  const o = t.closest("[data-wzopen]");
+  if (o && W.res) {
+    const c = W.res.items[Number(o.dataset.wzopen)];
+    B.sym = C.data.symbol; B.exp = C.data.expiry; B.name = c.name;
+    B.legs = c.legs.map((l) => ({ side: l.side, kind: l.kind, strike: l.strike, lots: 1 }));
+    C.tab = "strategy"; store.set("kairo-ocf-tab", "strategy");
+    $("#termChainFull").dataset.sg = ""; renderChainFull(); sgQueue(0);
+  }
+}
+
 function wireChain() {
   const onPick = (e) => {
     if (e.target.closest(".sg-wrap")) { sgChange(e); return; }
@@ -820,6 +903,7 @@ function wireChain() {
   };
   const onClick = (e) => {
     if (e.target.closest(".sg-wrap")) { sgClick(e); return; }
+    if (e.target.closest(".wz-wrap")) { wzClick(e); return; }
     const b = e.target.closest(".oc-ltp[data-id]");
     if (b) { C.full = false; renderChainFull(); openSymbol(`OPT:${b.dataset.id}`); return; }
     const tab = e.target.closest("[data-ocf]");
@@ -836,9 +920,10 @@ async function followUnderlying(sym) {
   if (isOpt(sym)) return;
   try { const r = await api(`/options/for/${encodeURIComponent(sym)}`); if (T.sym === sym) setUnderlying(r.symbol); } catch { /* no options: keep the current chain */ }
 }
-function ticket(side) {
+async function ticket(side) {
   const last = T.bars[T.bars.length - 1];
-  openTicket({ symbol: T.sym, side, ltp: (isOpt(T.sym) ? null : T.day?.price) ?? last?.close ?? null, label: label(T.sym) });
+  await openTicket({ symbol: T.sym, side, ltp: (isOpt(T.sym) ? null : T.day?.price) ?? last?.close ?? null, label: label(T.sym) });
+  if (tradable(T.sym)) kaiEvent("ticket", side);
 }
 function renderToolbar() {
   const can = tradable(T.sym);
@@ -847,6 +932,7 @@ function renderToolbar() {
   document.querySelectorAll("#termSpans button").forEach((b) => (b.disabled = isOpt(T.sym) && b.dataset.s !== "1d"));
   document.querySelectorAll("#termSpans button").forEach((b) => b.classList.toggle("on", b.dataset.s === T.span));
   $("#termType").classList.toggle("on", T.type === "candle");
+  $("#termKai").classList.toggle("on", kaiOn()); $("#termKai").setAttribute("aria-pressed", String(kaiOn()));
   $("#termType").title = T.type === "candle" ? "Show line" : "Show candles";
   document.querySelectorAll("#termScale button").forEach((b) => b.classList.toggle("on", b.dataset.m === T.scale));
   $("#termHide").classList.toggle("on", T.hideDraw);
@@ -855,6 +941,7 @@ function renderToolbar() {
 
 // ------------------------------------------------------------------ actions
 function setInterval_(iv, keepSpan = false) {
+  stopReplay();
   if (!keepSpan) T.span = null;
   if (iv === T.interval && T.bars.length) { renderToolbar(); return; }
   T.interval = iv; store.set("kairo-term-interval", iv); T.bars = []; T.pending = null;
@@ -875,11 +962,12 @@ function chooseSpan(key) {
 function openSymbol(sym) {
   sym = sym.toUpperCase();
   if (sym === T.sym && T.bars.length) return;
+  stopReplay();
   T.sym = sym; store.set("kairo-term-symbol", sym); T.opt = null;
   if (isOpt(sym) && T.interval === "1D") { T.interval = "5m"; store.set("kairo-term-interval", "5m"); }
   renderToolbar();
   followUnderlying(sym);
-  T.data = null; T.bars = []; T.day = null; T.pending = null; T.error = null;
+  T.data = null; T.bars = []; T.day = null; T.pending = null; T.error = null; T.kaiLevels = [];
   if (location.hash.indexOf(`symbol=${encodeURIComponent(sym)}`) === -1) history.replaceState(null, "", `#/terminal?symbol=${encodeURIComponent(sym)}`);
   renderHeader(); renderPanel(); loadBars(); startStream();
 }
@@ -953,7 +1041,7 @@ export function initTerminal() {
   $("#termPanelBody").onclick = (e) => { const b = e.target.closest(".tw-row"); if (b) openSymbol(b.dataset.sym); };
   document.addEventListener("keydown", (e) => {
     if (!T.visible || ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
-    if (e.key === "Escape") setTool("cross");
+    if (e.key === "Escape") { setTool("cross"); cancelPick(); }
     if ((e.key === "b" || e.key === "B") && !e.ctrlKey && !e.metaKey && tradable(T.sym) && !document.querySelector(".scrim")) { e.preventDefault(); ticket("BUY"); }
     if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey && tradable(T.sym) && !document.querySelector(".scrim")) { e.preventDefault(); ticket("SELL"); }
   });
@@ -965,6 +1053,31 @@ export function initTerminal() {
     const obs = new MutationObserver(() => { if (!document.body.contains(m)) { hideTradePanel(); obs.disconnect(); } });
     obs.observe(document.body, { childList: true });
   });
+  $("#termKai").onclick = () => { setKai(!kaiOn()); renderToolbar(); };
+  initKai({
+    ctx: () => (T.visible && !T.loading && (isOpt(T.sym) || T.day) ? { sym: T.sym, label: label(T.sym), interval: T.interval, bars: T.bars, ind: T.ind, tradable: tradable(T.sym),
+      open: replaying() || (isOpt(T.sym) ? !!T.opt?.market_open : T.day?.market_state === "open"),
+      replay: replaying(), now: replaying() ? replayTime() + BAR_S[T.interval] : null } : null),
+    point: (time, price) => {
+      const box = $("#termChart"), x = T.chart?.timeScale().timeToCoordinate(time), y = T.series.main?.priceToCoordinate(price);
+      return x == null || y == null ? null : { x: x + box.offsetLeft, y: y + box.offsetTop };
+    },
+    showIndicator: (k) => { T.ind = { ...T.ind, [k]: true }; store.set("kairo-term-ind", T.ind); renderToolbar(); if (T.lib && T.bars.length) buildChart(); },
+    setLevels: (list) => { T.kaiLevels = list; drawKaiLevels(); },
+  });
+  initChartOrders({ sym: () => T.sym, label: () => label(T.sym), ltp: () => (isOpt(T.sym) ? null : T.day?.price) ?? T.bars[T.bars.length - 1]?.close ?? null,
+    chart: () => T.chart, main: () => T.series.main, visible: () => T.visible });
+  initReplay({
+    bars: () => T.bars, interval: () => T.interval, label: () => label(T.sym),
+    setBars: (bars) => {
+      const vr = T.chart?.timeScale().getVisibleLogicalRange(), atEnd = !vr || vr.to >= T.bars.length - 2;
+      T.bars = bars; applyData(false); updateLegend(); renderHeader(); kaiTick();
+      if (atEnd) T.chart?.timeScale().scrollToRealTime();
+    },
+    exitTo: () => { T.bars = []; loadBars(); },
+    hint: (text) => { const h = $("#termHint"); h.hidden = !text; h.textContent = text; },
+  });
+  $("#termReplayBtn").onclick = () => { if (!T.bars.length) return; setTool("cross"); startPick(); };
   $("#termBuy").onclick = () => ticket("BUY");
   $("#termSell").onclick = () => ticket("SELL");
   refreshStatus();
@@ -981,12 +1094,19 @@ export function showTerminal(params) {
   if (broker === "connected") { toast("Upstox connected", "Switch to Live in Trade → Funds when you're ready.", "ok"); T.panel = "trade"; refreshStatus(); }
   if (broker === "failed") toast("Upstox login failed", "Check the app key, secret and redirect URL, then try again.", "err");
   const sym = (params.get("symbol") || T.sym || store.get("kairo-term-symbol", "") || "^NSEI").toUpperCase();
+  // Deep links (e.g. from Kai Academy): ?interval=15m&ind=rsi&chain=1&replay=1
+  const iv = params.get("interval"), ind = params.get("ind");
+  if (iv && BAR_S[iv] && iv !== T.interval) { stopReplay(); T.interval = iv; store.set("kairo-term-interval", iv); T.bars = []; T.span = null; }
+  let rebuild = false;
+  if (ind && ind in T.ind && !T.ind[ind]) { T.ind = { ...T.ind, [ind]: true }; store.set("kairo-term-ind", T.ind); rebuild = true; }
+  if (params.get("chain")) { T.panel = "chain"; store.set("kairo-term-panel", "chain"); if (window.matchMedia("(max-width: 1100px)").matches) { C.full = true; renderChainFull(); loadChain(); } }
+  if (params.get("replay")) T.replayAfterLoad = true;
   feed.require("terminal", getWatchlist().filter((s) => !s.startsWith("MF")));
   renderToolbar(); renderPanel();
   if (sym !== T.sym || !T.bars.length) openSymbol(sym);
-  else { startStream(); renderHeader(); }
+  else { startStream(); renderHeader(); if (rebuild && T.lib) buildChart(); if (T.replayAfterLoad) { T.replayAfterLoad = false; startPick(); } }
 }
 export function hideTerminal() {
   if (!T.visible) return;
-  T.visible = false; stopStream(); feed.release("terminal"); clearTimeout(C.timer);
+  T.visible = false; stopStream(); feed.release("terminal"); clearTimeout(C.timer); kaiHide();
 }

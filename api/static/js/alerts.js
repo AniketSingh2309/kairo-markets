@@ -104,6 +104,14 @@ export function initAlerts() {
   // One alerts stream for all Kairo tabs: whichever tab holds the lock keeps the connection open (even
   // in the background, so desktop notifications still arrive) and relays each alert to the other tabs.
   const triggered = (d, leader) => {
+    if (d.kind === "scan") {  // a saved screener scan has new matches
+      const title = `Scan: ${d.scan.name}`;
+      toast(title, d.message, "alert");
+      if (leader && "Notification" in window && Notification.permission === "granted") {
+        try { const n = new Notification(title, { body: d.message, tag: `kairo-scan-${d.scan.id}` }); n.onclick = () => { window.focus(); navigate("markets", "", { symbol: d.scan.symbols[0] }); }; } catch { /* ignore */ }
+      }
+      return;
+    }
     const a = d.alert, title = `${splitSym(a.symbol)[0]} alert`;
     toast(title, d.message, "alert");
     if (leader && "Notification" in window && Notification.permission === "granted") {

@@ -44,18 +44,27 @@ async def terminal_bars(
     sym = _symbol_or_422(symbol)
 
     async def load() -> ToolResponse[Bars]:
-        return await run_in_threadpool(get_bars, sym, interval, provider=provider, timeout_s=settings.tool_timeout_seconds)
+        try:
+            return await run_in_threadpool(get_bars, sym, interval, provider=provider, timeout_s=settings.tool_timeout_seconds)
+        except ToolError as exc:  # Yahoo stalls for a few seconds now and then; a second try usually answers at once
+            if not exc.retryable:
+                raise
+            return await run_in_threadpool(get_bars, sym, interval, provider=provider, timeout_s=settings.tool_timeout_seconds)
+    cache, stale = BAR_CACHES[interval], False
     try:
-        resp = await BAR_CACHES[interval].get(sym, load)
+        resp = await cache.get(sym, load)
     except UnknownSymbolError as exc:
         raise HTTPException(status_code=404, detail=exc.to_dict()) from None
     except InvalidInputError as exc:
         raise HTTPException(status_code=422, detail=exc.to_dict()) from None
     except ToolError as exc:
-        raise HTTPException(status_code=503, detail=exc.to_dict()) from None
+        # A failed refresh serves the last good candles (marked stale) rather than breaking the chart.
+        if (resp := cache.last_good(sym)) is None:
+            raise HTTPException(status_code=503, detail=exc.to_dict()) from None
+        stale = True
     d = resp.data
     return {"symbol": d.symbol, "name": d.name, "currency": d.currency, "interval": d.interval,
-            "previous_close": d.previous_close, "observed_at": resp.observed_at.isoformat(),
+            "previous_close": d.previous_close, "observed_at": resp.observed_at.isoformat(), "stale": stale,
             "t": [int(b.t.timestamp()) for b in d.bars], "o": [b.open for b in d.bars], "h": [b.high for b in d.bars],
             "l": [b.low for b in d.bars], "c": [b.close for b in d.bars], "v": [b.volume or 0 for b in d.bars]}
 

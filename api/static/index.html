@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kairo Markets</title>
 <meta name="theme-color" content="#0d1118">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Cpath d='M10 8v16M22 8l-8 8 8 8' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="/static/img/favicon.png">
+<link rel="apple-touch-icon" href="/static/img/kairo-icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,9 +16,9 @@
 <body>
 <header class="top">
   <a class="brand" href="#/explore" aria-label="Kairo Markets home">
-    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--brand)"/>
-      <path d="M10 8v16M22 8l-8 8 8 8" stroke="#fff" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    <span class="brand-word">kairo</span>
+    <img class="brand-mark" src="/static/img/kairo-mark.png" width="30" height="30" alt="">
+    <img class="brand-word brand-word-light" src="/static/img/kairo-wordmark-light.png" height="22" alt="">
+    <img class="brand-word brand-word-dark" src="/static/img/kairo-wordmark-dark.png" height="22" alt="">
   </a>
   <nav class="nav" id="nav" aria-label="Main">
     <a href="#/explore" data-v="explore"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg>Explore</a>
@@ -25,6 +26,8 @@
     <a href="#/terminal" data-v="terminal"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 4v3M7 17v3M17 4v6M17 18v2"/><rect x="5" y="7" width="4" height="10" rx="1"/><rect x="15" y="10" width="4" height="8" rx="1"/></svg>Terminal</a>
     <a href="#/funds" data-v="funds"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>Funds</a>
     <a href="#/portfolio" data-v="portfolio"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12A9 9 0 1 1 12 3v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/></svg>Portfolio</a>
+    <a href="#/pulse" data-v="pulse"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Pulse</a>
+    <a href="#/learn" data-v="learn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11v5c3 2.5 9 2.5 12 0v-5"/></svg>Learn</a>
     <a href="#/screener" data-v="screener"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>Screener</a>
     <a href="#/news" data-v="news"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/></svg>News</a>
     <a href="#/alerts" data-v="alerts"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Alerts<span class="count" id="alertCount" hidden></span></a>
@@ -60,6 +63,8 @@
     <div class="term-ind"><button class="term-btn wide" id="termIndBtn"><i>ƒ</i> Indicators <b id="termIndCount"></b></button><div class="term-menu" id="termIndMenu" hidden></div></div>
     <button class="term-btn wide term-chainbtn" id="termChainBtn">Option chain</button>
     <button class="term-btn wide term-chainbtn" id="termTradeBtn">Positions</button>
+    <button class="term-btn wide" id="termReplayBtn" title="Bar Replay: rewind to any candle and practise trading it forward, with Kai coaching"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M10 9l5 3-5 3z" fill="currentColor"/></svg> Replay</button>
+    <button class="term-btn wide" id="termKai" title="Kai, your live trading teacher: tips on the chart as things happen" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11v5c3 2.5 9 2.5 12 0v-5M22 9v6"/></svg> Kai</button>
     <button class="term-btn" id="termShot" title="Download chart image" aria-label="Download chart image"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
     <button class="term-btn" id="termFull" title="Full screen" aria-label="Full screen"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
   </div>
@@ -74,6 +79,7 @@
       <div class="term-chainfull" id="termChainFull" hidden></div>
       <div class="term-bottom">
         <div class="term-spans" id="termSpans"></div>
+        <button class="kai-strip" id="kaiStrip" hidden title="Kai's read of this chart: click for the full plan"></button>
         <div class="term-sp"></div>
         <span class="muted num" id="termClock"></span>
         <div class="term-scale" id="termScale"><button data-m="pct" title="Percent scale">%</button><button data-m="log" title="Logarithmic scale">log</button></div>
@@ -155,6 +161,7 @@
           <div class="card"><div class="card-h"><span class="card-t">Today</span></div><div class="stats" id="stats"></div></div>
           <div class="card"><div class="card-h"><span class="card-t">Trades</span><span class="muted" style="font-size:12px" id="tapeNote"></span></div><div class="tape num" id="tape"></div></div>
         </div>
+        <div class="card rs-card" id="indiaCard" hidden></div>
         <div class="card rs-card" id="fundCard" hidden></div>
         <div class="card rs-card" id="finCard" hidden></div>
         <div class="rs-row"><div class="card rs-card" id="scoreCard" hidden></div><div class="card rs-card" id="shpCard" hidden></div></div>
@@ -202,13 +209,40 @@
   </div>
 </div>
 
+<!-- ================================================================ pulse (India market data) -->
+<div class="view page-wrap" id="view-pulse" hidden>
+  <div class="page">
+    <div class="page-h"><div><h1 class="page-title">Pulse</h1><div class="page-sub">India's market data, every session: who is buying, big deals, results and dividends, IPOs, delivery and surveillance.</div></div></div>
+    <div class="tabs" id="pulseTabs" role="tablist"></div>
+    <div id="pulseBody"></div>
+  </div>
+</div>
+
+<!-- ================================================================ trade journal -->
+<div class="view page-wrap" id="view-journal" hidden>
+  <div class="page">
+    <div class="page-h"><div><h1 class="page-title">Trade journal</h1><div class="page-sub">Every paper trade from entry to exit, your notes, and what the numbers say about how you trade.</div></div>
+      <div class="actions"><a class="btn" href="#/terminal">Open the Terminal</a></div></div>
+    <div id="journalBody"></div>
+  </div>
+</div>
+
+<!-- ================================================================ Kai Academy -->
+<div class="view page-wrap" id="view-learn" hidden>
+  <div class="page" style="max-width:1000px" id="learnBody"></div>
+</div>
+
 <!-- ================================================================ screener -->
 <div class="view page-wrap" id="view-screener" hidden>
   <div class="page">
-    <div class="page-h"><div><h1 class="page-title">Screener</h1><div class="page-sub">Scan a market for momentum, trend and over-extension. Click any row for its chart.</div></div></div>
+    <div class="page-h"><div><h1 class="page-title">Screener</h1><div class="page-sub">Scan a market with presets, or write your own query over price, delivery and fundamentals. Click any row for its chart.</div></div>
+      <div class="actions"><div class="seg" id="scrMode"><button data-m="presets">Presets</button><button data-m="query">Query</button></div></div></div>
+    <div id="scrPresetsView">
     <div class="filters"><select class="uni-select" id="scrUniverse" aria-label="Stocks to scan"></select><input class="input" id="scrSearch" placeholder="Filter by name or symbol" aria-label="Filter results"></div>
     <div class="chips" id="scrPresets" style="margin-bottom:14px"></div>
     <div id="scrBody"><div class="card"><div class="skeleton" style="height:240px"></div></div></div>
+    </div>
+    <div id="scrQuery" hidden></div>
   </div>
 </div>
 

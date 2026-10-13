@@ -343,6 +343,49 @@ class GttIn(BaseModel):
         return self
 
 
+# ------------------------------------------------------------------------------------------ super orders
+
+
+class SuperIn(OrderIn):
+    """Super (bracket) order: a market or limit entry, plus a target and a stop-loss that go live as an OCO
+    as soon as the entry fills. ``trail`` (in rupees) makes the stop follow the best price since entry."""
+
+    target: float = Field(gt=0)
+    stop: float = Field(gt=0)
+    trail: float | None = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _legs(self) -> SuperIn:
+        if self.order_type not in ("MARKET", "LIMIT"):
+            raise ValueError("a super order's entry must be a market or limit order")
+        long = self.side == "BUY"
+        if long and not self.stop < self.target:
+            raise ValueError("for a buy, the stop-loss must be below the target")
+        if not long and not self.stop > self.target:
+            raise ValueError("for a sell, the stop-loss must be above the target")
+        if self.price is not None and not (min(self.stop, self.target) < self.price < max(self.stop, self.target)):
+            raise ValueError("the entry price must sit between the stop-loss and the target")
+        return self
+
+    def entry(self) -> OrderIn:
+        return OrderIn(**self.model_dump(include=set(OrderIn.model_fields)))
+
+
+def legs_ok(side: str, target: float, stop: float, price: float | None) -> str | None:
+    """Why a target/stop pair is invalid for this side at this price, or None."""
+    long = side == "BUY"
+    if (long and not stop < target) or (not long and not stop > target):
+        return "the stop-loss must be on the losing side of the target"
+    if price is not None and not (min(stop, target) < price < max(stop, target)):
+        return f"the price ({price:g}) must sit between the stop-loss and the target"
+    return None
+
+
+def trail_stop(side: str, best: float, trail: float, stop: float) -> float:
+    """The stop after trailing: ``trail`` behind the best price since entry, and never moved back."""
+    return max(stop, best - trail) if side == "BUY" else min(stop, best + trail)
+
+
 def gtt_direction(trigger: float, ltp: float) -> str:
     """A single GTT fires when the price reaches the trigger from wherever it was when the GTT was set."""
     return "above" if trigger >= ltp else "below"

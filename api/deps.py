@@ -1,4 +1,4 @@
-"""Shared dependencies for the app-shell APIs: store, alert engine and TTL caches.
+"""Shared dependencies for the app-shell APIs: stores (per account), alert engines and TTL caches.
 
 Caches keep Yahoo traffic polite (it rate-limits aggressively) and make page loads fast.
 Each cache entry remembers when it was fetched so responses can say how old they are.
@@ -13,9 +13,11 @@ from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from typing import Any, Generic, TypeVar
 
+from fastapi import Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from api.live import get_live_provider, get_stream_hub
+from core.accounts import Accounts
 from core.alerts import AlertEngine
 from core.config import get_settings
 from core.portfolio import QuoteLite
@@ -43,6 +45,11 @@ class TTLCache(Generic[V]):
     def peek(self, key: Any) -> V | None:
         hit = self._data.get(key)
         return hit[1] if hit and time.monotonic() - hit[0] < self.ttl else None
+
+    def last_good(self, key: Any) -> V | None:
+        """The last value fetched for `key`, however old: served when a refresh fails."""
+        hit = self._data.get(key)
+        return hit[1] if hit else None
 
     async def get(self, key: Any, loader: Callable[[], Awaitable[V]]) -> V:
         if (hit := self.peek(key)) is not None:
@@ -120,8 +127,71 @@ async def quotes_for(symbols: list[str], provider: MarketDataProvider) -> tuple[
 
 
 @lru_cache(maxsize=1)
-def get_store() -> Store:
+def get_shared_store() -> Store:
+    """Market-wide data (OI snapshots, IV and FII/DII history), and everything in single-user mode."""
     return Store(get_settings().db_path)
+
+
+# ---------------------------------------------------------------------------- accounts
+AUTH_COOKIE = "kairo_session"
+_USER_STORES: dict[str, Store] = {}
+_USER_LOCK = threading.Lock()
+
+
+def auth_on() -> bool:
+    return get_settings().auth == "on"
+
+
+@lru_cache(maxsize=1)
+def get_accounts() -> Accounts:
+    return Accounts(get_settings().db_path.parent / "accounts.db")
+
+
+def user_db_path(user_id: str):
+    return get_settings().db_path.parent / "users" / f"{user_id}.db"
+
+
+def user_store(user_id: str) -> Store:
+    """Each account's own database: portfolio, paper account, journal, alerts, scans."""
+    with _USER_LOCK:
+        st = _USER_STORES.get(user_id)
+        if st is None:
+            st = _USER_STORES[user_id] = Store(user_db_path(user_id))
+        return st
+
+
+def drop_user_store(user_id: str) -> None:
+    with _USER_LOCK:
+        st = _USER_STORES.pop(user_id, None)
+    if st is not None:
+        _ENGINES.pop(id(st), None)
+        st._conn.close()
+
+
+def current_session(request: Request) -> dict[str, Any]:
+    """The signed-in, unlocked session for this request: 401 when signed out, 423 when the app PIN is needed."""
+    accounts, token = get_accounts(), request.cookies.get(AUTH_COOKIE)
+    s = accounts.session(token)
+    if s is None:
+        raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "Please log in to continue."})
+    if accounts.is_locked(s):
+        raise HTTPException(status_code=423, detail={"code": "LOCKED", "message": "Enter your PIN to continue."})
+    accounts.touch(token, s)
+    return s
+
+
+def get_store(request: Request) -> Store:
+    """The signed-in user's store (or the single shared store when accounts are off)."""
+    if not auth_on():
+        return get_shared_store()
+    return user_store(current_session(request)["user_id"])
+
+
+def all_stores() -> list[Store]:
+    """Every account's store, for background jobs (scan alerts, paper orders)."""
+    if not auth_on():
+        return [get_shared_store()]
+    return [user_store(uid) for uid in get_accounts().user_ids() if user_db_path(uid).exists()]
 
 
 @lru_cache(maxsize=1)
@@ -151,6 +221,15 @@ def get_logo_store() -> LogoStore:
     return LogoStore(get_settings().db_path.parent / "logos")
 
 
-@lru_cache(maxsize=1)
-def get_alert_engine() -> AlertEngine:
-    return AlertEngine(get_store(), get_live_provider(), get_stream_hub(), timeout_s=_timeout())
+_ENGINES: dict[int, AlertEngine] = {}
+
+
+def alert_engine_for(store: Store) -> AlertEngine:
+    eng = _ENGINES.get(id(store))
+    if eng is None:
+        eng = _ENGINES[id(store)] = AlertEngine(store, get_live_provider(), get_stream_hub(), timeout_s=_timeout())
+    return eng
+
+
+def get_alert_engine(store: Store = Depends(get_store)) -> AlertEngine:
+    return alert_engine_for(store)

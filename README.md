@@ -188,7 +188,28 @@ Open `http://localhost:8000`. The app is a single page with no build step and no
 
 ## Platform features
 
-The app has these sections: **Explore · Stocks · Funds · Portfolio · Screener · News · Alerts**. On phones they sit in a bottom tab bar. Portfolio and alerts live in a local SQLite file (`data/kairo.db`, override with `KAIRO_DB_PATH`) and never leave the machine.
+The app has these sections: **Explore · Stocks · Terminal · Funds · Portfolio · Pulse · Learn · Screener · News · Alerts**, plus the **Trade journal** (`#/journal`). On phones they sit in a bottom tab bar that scrolls sideways. Portfolio and alerts live in a local SQLite file (`data/kairo.db`, override with `KAIRO_DB_PATH`) and never leave the machine.
+
+### Accounts and the app PIN (`core/accounts.py`, `api/auth.py`, `static/js/auth.js`)
+
+Kairo has accounts, like the apps it competes with, but it asks only for what a learning and analysis app needs.
+
+- **Sign-up**: first name, email, password, an "I am 18 or older" confirmation, and consent to the Terms and Privacy Policy. Optional: WhatsApp updates. Kairo is not a broker, so it never asks for PAN, Aadhaar, bank details or broker passwords.
+- **Onboarding** (skippable): experience, what you want to trade, style, language, and how much practice money the paper account starts with. Kai uses the answers; new users get Kai switched on.
+- **4-digit app PIN, like Groww's**:
+  - Set it after sign-up, by entering it twice; easy PINs such as 1111 or 1234 are refused.
+  - It's asked when you open the app, after 5 minutes without activity, and after a minute in another tab. The server also locks a session after 15 idle minutes.
+  - A locked session gets **423 Locked** from every endpoint with personal data, so the lock is enforced by the server, not just hidden in the browser.
+  - Five wrong PINs log you out; your password is needed to get back in.
+  - Changing or removing the PIN needs the password.
+- **Security**:
+  - Passwords and PINs are hashed with scrypt.
+  - Sessions are random tokens in an httpOnly, SameSite cookie, and only their hash is stored. Set `KAIRO_COOKIE_SECURE=true` behind HTTPS.
+  - Logins pause for 15 minutes after 5 wrong passwords.
+  - A password reset (a 6-digit emailed code, using `SMTP_*` in `.env`, or written to the server log without it) logs out every other device.
+- **Each account's data is separate**: portfolio, paper account, journal, alerts and scans live in their own file, `data/users/<id>.db`. Market-wide data (option-chain snapshots, IV and FII/DII history) is shared. The **first account created takes over the data Kairo already had** from single-user mode; your old `data/kairo.db` is left untouched.
+- **Your data, your call** (DPDP Act 2023): the account menu downloads everything Kairo holds about you as JSON, and **Delete my account** (password + typing DELETE) removes the account and its data file for good.
+- `KAIRO_AUTH=off` switches back to single-user mode (the test suite runs that way).
 
 ### Portfolio (`core/portfolio.py`, `core/finance.py`, `api/portfolio.py`)
 
@@ -232,6 +253,20 @@ This is not tax advice.
   - The type comes from the AMFI category. Where the category alone doesn't settle it (e.g. FoFs, index funds), the result is marked as inferred.
 - **Not shown:** expense ratio, AUM and portfolio holdings. They aren't available as free official data, and the app says so.
 
+### Mutual funds from a CAS, tax harvesting and Direct-plan savings (`core/cas.py`, `core/wealth.py`, `static/js/wealth.js`)
+
+- **CAS import** (`POST /portfolio/import-cas`): upload the detailed Consolidated Account Statement PDF from CAMS or KFintech (password: usually your PAN in capitals). It's decrypted and read on this machine (`pypdf` + `cryptography`).
+  - Every purchase, SIP, switch and redemption becomes a buy or sell at that day's NAV.
+  - Funds are matched to AMFI scheme codes by ISIN, with a close-name fallback.
+  - **Reconciliation**: the units read for each fund must add up to the statement's own closing balance, or that fund is skipped and reported rather than half-imported.
+  - A statement that starts mid-history gets one opening lot, with its cost backed out from the statement's total cost value (marked as estimated).
+  - Re-importing the same CAS skips rows already in the portfolio.
+- **Tax harvesting** (`GET /portfolio/harvest`, on the Tax P&L tab):
+  - **Gains**: sell enough of the *oldest* long-term units (FIFO, the ones a sale would actually use) to book gains up to the unused LTCG exemption, and buy them straight back. This raises the cost basis tax-free.
+  - **Losses**: when this year has taxable gains, the loss-making lots that could offset them, and the tax that would save (short-term losses offset any gain; long-term losses only long-term gains).
+  - **Record it** (`POST /portfolio/harvest/record`): after placing the trades at your broker, one click adds the sale and buy-back to the portfolio.
+- **Regular → Direct** (`GET /portfolio/direct-savings`, on the Holdings tab): for each Regular-plan fund you hold, the Direct plan of the same fund, both plans' actual CAGR over up to 3 years, the yearly gap (mostly the distributor commission), roughly what it has cost so far and what it would cost over 10 years. Switching is a sale, so the page reminds you about tax and exit loads.
+
 ### Health check (`core/health.py`)
 
 The health check uses current holdings and one year of prices. It covers:
@@ -251,6 +286,18 @@ The score is 100 minus 20 per issue and 8 per warning, so it's fully traceable.
 - **Screener:** scans NSE large caps, US mega caps, crypto or your watchlist. It shows 1D–1Y returns, RSI, trend against the 50/200-day averages, golden cross, distance from the 52-week high, and volatility. Presets (gainers, momentum, oversold…) and every column filter and sort client-side.
 - **News:** merged, de-duplicated headlines for holdings and/or the watchlist, grouped by day. Yahoo's coverage of NSE stocks is thin, and the page says so.
 - **Alerts:** price above/below, or day change above/below. A server-side engine evaluates them on every streamed tick, plus periodic snapshots. Each alert fires once, with an in-app toast and an optional desktop notification, and can be re-armed.
+
+### Query screener and scan alerts (`core/query.py`, `api/scans.py`, `static/js/query.js`)
+
+The Screener's **Query** mode works like Screener.in and Chartink: write conditions such as `roe > 15 AND pe < 25 AND close > sma200` and run them over any universe (up to 500 stocks).
+
+- **Fields** (`GET /screener/fields`):
+  - price and technicals: returns over 1D–1Y, RSI, SMA 20/50/200, EMA 20, MACD histogram, ADX, ATR %, volume vs average, 52-week high/low and distance from them, volatility, golden cross;
+  - India: delivery %, delivered quantity vs usual, turnover, ASM, GSM, F&O ban;
+  - fundamentals: market cap (₹ crore), P/E, P/B, P/S, EV/EBITDA, ROE, margins, debt/equity, revenue and earnings growth, dividend yield, beta, EPS.
+- **Language**: AND, OR, NOT (or `&&`, `||`, `!`), brackets, `+ - * /`, and `< <= > >= = !=`. It's parsed into a tree and evaluated by code, never by `eval`. Unknown fields get a "did you mean" suggestion.
+- **Fast by design**: evaluation is three-valued (a missing field is *unknown*). Fundamentals are fetched only for stocks the cheaper conditions haven't already ruled out.
+- **Saved scans** (`/screener/scans`): save a query; switch on **Alert me** and it re-runs every 15 minutes in market hours (and once after the close). Stocks that *newly* match arrive on the alerts stream as an in-app toast and a desktop notification. The first run sets the baseline.
 
 ## Live price chart (`api/live.py`, `tools/streaming/`)
 
@@ -320,6 +367,104 @@ A full-screen trading chart, modelled on Groww's Terminal. Phase A covers the sc
 - **Side panel:** Watchlist with live prices (click to load) and Details (today's numbers, day and 52-week range).
 - **Previous close:** Yahoo's intraday `previousClose` can be a session stale for indices (NIFTY 50 showed +0.21% on a −0.76% day). The provider now takes the previous close from the daily candles (one cached request per symbol per day). This also fixes the index strip and stock pages.
 
+### Bar Replay (`static/js/replay.js`)
+
+**Replay** in the Terminal toolbar rewinds the chart to any candle you click, then plays it forward bar by bar: play / pause (Space), step (← →), speeds 1× to 25×.
+
+- **Practice trades**: Buy / Sell / Close at the replay price, with a running score that's summarised when you exit.
+- **Kai coaches the replay as if it were live**: his clock is the replay's, he never sees later candles (including the daily context), the odds check is off (it uses today's data), and **Kai pauses** (on by default) stops playback when he has a tip.
+- Live ticks are ignored during a replay; changing the symbol or interval leaves it.
+
+### Trading from the chart (`static/js/chartorders.js`)
+
+- Open orders and super-order legs are drawn on the chart as labelled price lines.
+- A super order's **target and stop-loss have handles you drag** to move them (`PATCH /trading/super/{id}`).
+- The **Trade at a price** tool (₹ icon on the left): click any price on the chart for Buy limit / Buy stop / Sell limit / Sell stop / Super buy at that price, or **Set an alert** there.
+- Deep links: `#/terminal?symbol=…&interval=15m&ind=rsi&chain=1&replay=1` (used by Kai Academy).
+
+### Kai, the live trading teacher (`static/js/teacher.js`, `static/js/coach.js`)
+
+The **Kai** button in the Terminal toolbar switches on a teacher that reads the chart while you trade and coaches you through it. The setting is remembered.
+
+**What Kai reads** (`coach.js`, pure functions over the candles on screen, re-run on every tick, at most every 2.5 s):
+
+- **Trend structure:** from swing points. Higher highs and higher lows, lower highs and lower lows, ranges, narrowing triangles and expanding swings.
+- **Key levels:**
+  - swing highs and lows, grouped by how often they've been tested;
+  - previous day high, low and close;
+  - today's open and the opening range (first 15 minutes);
+  - VWAP, the 200 SMA and the 52-week high and low.
+- **Candlestick patterns (22):**
+  - three white soldiers and three black crows;
+  - morning and evening star;
+  - bullish and bearish engulfing;
+  - piercing line and dark cloud cover;
+  - bullish and bearish harami;
+  - tweezer top and bottom;
+  - inside bar;
+  - doji, dragonfly doji and gravestone doji;
+  - hammer and hanging man;
+  - shooting star and inverted hammer;
+  - bullish and bearish marubozu.
+
+  A pattern that forms at a support or resistance level counts as stronger.
+- **Chart patterns and events:**
+  - double top and bottom (forming, then confirmed on a neckline break, with the textbook target);
+  - range breakouts and breakdowns, checked against volume;
+  - Bollinger squeeze;
+  - bullish and bearish RSI divergence;
+  - golden and death cross;
+  - pullbacks to the 20 EMA in a trend;
+  - prices stretched far from the 20 EMA, and long runs of rising or falling closes;
+  - RSI 70/30, MACD and 20 EMA crosses;
+  - volume spikes and wide-range candles.
+- **Live intraday events:**
+  - opening-range breakouts and breakdowns;
+  - new highs and lows of the day;
+  - VWAP crosses.
+- **Daily context:** on intraday charts, Kai also loads the daily candles, to see the bigger trend and how far price is from its 52-week high.
+
+**What Kai tells you:**
+
+- **A read in the bottom bar**, updated every candle. It shows the bias (Bullish / Leaning bullish / No clear edge / Leaning bearish / Bearish) with the nearest support and resistance. Click it for the full plan.
+- **The plan card**, shown when you open a chart and whenever you click the bottom bar. It has four parts:
+  - **What I see:** the trend, the daily trend, momentum and the patterns on the chart now, plus the reasons behind the bias.
+  - **Key levels.**
+  - **What to do next:** a buy or sell zone, a stop where the idea is proven wrong, a target at the next level (or 2× the risk), and the reward-to-risk ratio. It also gives a position size that risks 1% of your capital, capped at what that capital can buy.
+  - **Odds check:** the walk-forward-tested statistical forecast (`/forecast`), so the plan comes with an honest view of how predictable this stock has been.
+
+  Kai also draws the plan's levels on the chart as labelled price lines.
+- **Pop-up tips** pinned to the candle where a pattern or event just happened. Each one explains what it means and what to do next. When the overall read changes on a closed candle, Kai says so and gives the new plan.
+- **Time-of-day guidance:**
+  - let the opening range form during the first 15 minutes;
+  - expect fewer good breakouts in the midday lull;
+  - no new intraday trades after 15:00, before the 15:20 square-off.
+- **Order ticket:** Kai says whether the trade goes with or against its read. It shows the plan's stop and target (with a hint to use a GTT OCO) and the position size.
+- **When the market is closed**, Kai switches to a **session recap**. It covers:
+  - how the session closed (change, where in the day's range it closed, volume, gaps);
+  - three scenarios for the next open around the session's high and low;
+  - the plan for the next session.
+- **Quiet moments:** Kai gives 14 basic tips, each shown once, ever. They include: never average down, place stops where the idea is wrong, wait for the candle to close, check the index first, fewer and better trades, and keep a journal.
+
+**Behaviour:**
+
+- One tip at a time. It disappears when you click **OK** (or press Esc).
+- After a tip, Kai stays quiet for 45 s, and the same event on the same stock isn't repeated within 10 minutes.
+- Tips about an indicator that isn't on the chart offer to add it.
+
+**How the advice is made:** Kai uses fixed rules, with no LLM, so its guidance is instant, free and always matches the chart. Plans are scenarios with an exit, not predictions. Short-horizon direction on liquid stocks is close to a coin flip, and the odds check says so. Every card is marked as a lesson, not investment advice.
+
+### Super orders (`core/trading.py`, `/trading/super`)
+
+Entry + target + stop-loss, with an optional **trailing stop**, in one paper order, like Dhan's Super Order.
+
+- **How it works**: when the entry (market or limit) fills, the target and stop-loss go live as an OCO. The trailing stop follows the best price by the amount you set and never moves back.
+- **Safety**:
+  - if the position is closed another way (Exit, or the 15:20 square-off), the legs are cancelled, so they can never reopen it;
+  - if the price is already past a leg when the entry fills, Kairo exits at once;
+  - a market entry must start between the stop and the target.
+- **Kai's "Trade this plan"** opens the order ticket as a super order pre-filled with his entry, stop, target and position size. You review it before placing. The stop is never tighter than 0.3% (intraday charts) or 1% (daily), so normal noise doesn't trip it.
+
 ### Option chain (`tools/providers/nse.py`, `api/options.py`)
 
 Data comes from nseindia.com. NSE serves JSON only to a browser-like session, so the client first loads the option-chain page for cookies and renews the session once if NSE refuses.
@@ -384,6 +529,40 @@ How live mode behaves:
 - **Endpoints used:** v2 login, v3 place and cancel, and v2 order book, positions, holdings and funds.
 - **Testing:** the connector is tested against simulated Upstox responses only. It hasn't been run against a real account.
 
+## Pulse: India market data (`#/pulse`, `api/india.py`, `tools/providers/nse_india.py`)
+
+Public NSE data that Indian traders check every session, on one page:
+
+| Tab | What | Source |
+|---|---|---|
+| Flows & positioning | FII / DII net cash flows (history kept from the day Kairo starts collecting), and who is long or short index futures: FII, DII, pro and client, with the day's change | `fiidiiTradeReact`, `fao_participant_oi_<date>.csv` |
+| Bulk & block deals | The last session's large trades, by value | `snapshot-capital-market-largedeal` |
+| Results & actions | Board meetings (results) and corporate actions (dividends with amounts, splits, bonus, buybacks) for the next 45 days: your stocks, results only, dividends, or everything | `event-calendar`, `corporates-corporateActions` |
+| IPOs | Open (with live subscription), upcoming, and listed in the last 60 days | `ipo-current-issue`, `all-upcoming-issues`, `public-past-issues` |
+| Delivery | High-delivery buying: up on the day, delivery above 50% and at least 1.5× the usual delivered quantity | `sec_bhavdata_full_<date>.csv` |
+| Surveillance | Stocks under ASM / GSM and in the F&O ban | `reportASM`, `reportGSM`, `fo_secban.csv` |
+
+- **Per stock** (`GET /india/stock/{symbol}`): the stock page gets an **India pulse** card (delivery vs usual, upcoming results and dividends, the last session's large deals). The order ticket shows **risk nudges** (ASM / GSM / F&O ban / thin liquidity), like Kite's, and Kai warns once per stock.
+- **Caching**: daily files are cached on disk (a published file never changes); everything else for 15 minutes to 3 hours.
+- **Not included**: insider trades (NSE's PIT endpoint currently returns nothing).
+
+## Kai Academy (`#/learn`, `static/js/academy.js`, `static/js/academy-content.js`)
+
+A Varsity-style course: **8 modules, 26 lessons, 53 quiz questions**. It covers how the Indian market works (orders, intraday vs delivery, costs and tax), reading charts, key levels, candlestick and chart patterns, indicators, risk and psychology, futures and options, and India's market data.
+
+- Each lesson is a short read, with drawn candle illustrations where they help, and a quiz with an explanation for every answer.
+- Most lessons have a **Try it live** button that opens the Terminal on a suitable stock, interval and indicator, with Kai switched on (or Bar Replay, or the option chain).
+- A lesson counts as done when its quiz is all correct. Progress stays in the browser, and finishing every lesson unlocks a printable **certificate**.
+
+## Trade journal (`#/journal`, `core/journal.py`, `api/journal.py`)
+
+Every paper trade, flat to flat (scaling in and out, and flips, are handled), with:
+
+- **Numbers**: net P&L, win rate, expectancy, average win and loss, profit factor, **average R** (result ÷ the risk set by a super order's initial stop), maximum drawdown, worst losing streak, and holding time of winners vs losers.
+- **Charts and breakdowns**: an equity curve with hover, and results by setup, by mistake, by hour opened and by stock.
+- **Notes**: tag each trade's setup (Breakout, Pullback, Kai's plan…) and mistakes (No stop-loss, Moved my stop, Chased the move, Revenge trade…), rate the execution, and add a note.
+- **What Kai sees in your trades**: plain-language insights, e.g. "your average loss is bigger than your average win", "you hold losers much longer than winners", "trades tagged 'Chased the move' cost you ₹X", "trades opened around 3 pm lose".
+
 ## Stock research (`api/research.py`, `core/scorecard.py`, `static/js/research.js`)
 
 Every stock page now has:
@@ -439,6 +618,19 @@ The full option chain in the Terminal has four tabs.
   - shows net premium, max profit and max loss ("Unlimited" when the payoff keeps rising or falling past the outer strikes), breakevens, chance of profit (lognormal at the ATM IV), net Greeks and the paper margin needed;
   - the payoff chart draws profit or loss at expiry and today (Black-Scholes with each leg's IV); hover it for the value at any price;
   - **Place** sends all legs as one paper basket (buy legs first), and **Save as basket** keeps it for later. It re-prices every 15 s while the market is open.
+
+### Strategy wizard and IV (`core/wizard.py`, `/options/wizard`, `/options/iv`)
+
+A **Wizard** tab in the full option chain, like Sensibull's:
+
+- **Is premium cheap or expensive?** (`GET /options/iv`):
+  - ATM implied volatility against realised volatility (20 and 60 days);
+  - IV rank and percentile, from daily ATM IV readings Kairo records (20 days needed), with India VIX's 1-year rank used for index options until then;
+  - a plain-language verdict.
+- **Context**: FII index-futures positioning for index options; results or other events before expiry for stock options.
+- **From a view to strategies** (`POST /options/wizard`): choose Bullish, Bearish, Range-bound or Big move, and a target (defaults to the expected move). Kai builds the textbook strategies around spot and target from the live chain (1 lot per leg) and ranks them by **profit at your target per rupee of maximum loss**. Each shows max profit and loss, chance of profit, breakevens and net premium.
+  - Strategies with unlimited risk, or a **naked short** option (whose loss can be many times the premium), are flagged and ranked last.
+  - **Open in builder** loads any of them into the strategy builder to tweak and place.
 
 ## Charts and logos (`/chart/{symbol}`, `/logo/{symbol}`)
 
@@ -535,8 +727,10 @@ You can get a free key at https://console.groq.com/keys. The key is only ever re
 ## Run
 
 ```bash
-uvicorn api.main:app --reload
+uvicorn api.main:app --reload --timeout-graceful-shutdown 3
 ```
+
+`--timeout-graceful-shutdown` matters with `--reload`. An open browser tab keeps live price streams (SSE) connected, and without the flag a reload waits for them forever, leaving the server hung. Changes to `.env` are only read at startup, so restart after editing it.
 
 ```bash
 curl -X POST localhost:8000/analyze -H "Content-Type: application/json" \

@@ -1,5 +1,6 @@
 // Portfolio: holdings (live), tax P&L, health check, transactions, add / import.
 import { $, esc, api, toast, modal, money, signedMoney, pctTxt, tone, fmt, dateTxt, symHtml, splitSym, inrShort, navigate, feed, isMf, logoHtml } from "./core.js";
+import { openCasImport, renderHarvest, renderDirectSavings } from "./wealth.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const PALETTE = ["#7c5cff", "#1cc47e", "#4ea1ff", "#e9a23b", "#f2495c", "#c27bff", "#2ec4b6", "#ff8a5b", "#9aa2b1"];
@@ -71,10 +72,10 @@ function render() {
 function emptyState() {
   return `<div class="card empty-state"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" stroke-width="1.6"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></svg>
     <h3>Track your portfolio</h3><p>Add trades or import your broker's tradebook to see live P&L, XIRR, an Indian capital-gains estimate and a health check.</p>
-    <div class="actions"><button class="btn primary" data-act="add">Add a trade</button><button class="btn" data-act="import">Import CSV</button></div>
+    <div class="actions"><button class="btn primary" data-act="add">Add a trade</button><button class="btn" data-act="import">Import CSV</button><button class="btn" data-act="cas">Import mutual funds (CAS PDF)</button></div>
     <div class="fine">Supports Zerodha Console tradebook exports and a simple date, symbol, side, quantity, price CSV. Everything stays on this computer.</div></div>`;
 }
-function wireEmpty() { $("#portfolioBody").onclick = (e) => { const a = e.target.closest("[data-act]")?.dataset.act; if (a === "add") openAddTrade(); if (a === "import") openImport(); }; }
+function wireEmpty() { $("#portfolioBody").onclick = (e) => { const a = e.target.closest("[data-act]")?.dataset.act; if (a === "add") openAddTrade(); if (a === "import") openImport(); if (a === "cas") openCasImport(reloadAll); }; }
 
 function renderSummary() {
   const box = $("#pfSummary"); if (!box) return;
@@ -129,7 +130,8 @@ function renderHoldings() {
     ${ps.map(holdingRow).join("") || `<tr><td colspan="9" class="muted">No open positions in ${esc(P.cur)}.</td></tr>`}</table></div>${missing}</div>` +
     (closed.length ? `<div class="card"><details><summary>Closed positions (${closed.length})</summary><div class="table-wrap" style="margin-top:8px"><table>
       <tr><th>Instrument</th><th class="r">Realized P&L</th></tr>${closed.map((c) => `<tr><td class="cell-sym">${symHtml(c.symbol)}</td><td class="r num ${tone(c.realized_pnl)}">${signedMoney(c.realized_pnl, c.currency)}</td></tr>`).join("")}
-      </table></div></details></div>` : "");
+      </table></div></details></div>` : "") + `<div id="pfDirect"></div>`;
+  renderDirectSavings($("#pfDirect"));
   $("#pfHoldings").onclick = (e) => { const tr = e.target.closest("tr[data-sym]"); if (tr) navigate("markets", "", { symbol: tr.dataset.sym }); };
 }
 
@@ -178,9 +180,11 @@ function renderTax() {
         <td class="num">${esc(l.buy_date)}</td><td class="num">${esc(l.sell_date)}</td><td class="r num">${l.holding_days}d</td><td class="r num">${money(l.cost, l.currency)}</td><td class="r num">${money(l.proceeds, l.currency)}</td><td class="r num ${tone(l.gain)}">${signedMoney(l.gain, l.currency)}</td></tr>`).join("")}
       </table></div></details></div>`;
   }
+  if (t.fy === plan.fy) h += `<div id="pfHarvest" style="margin-top:14px"></div>`;
   h += `<div class="fine">${rep.notes.map(esc).join("<br>")}</div>`;
   $("#pfSub").innerHTML = h;
   $("#fySel").onchange = (e) => loadTax(e.target.value);
+  if (t.fy === plan.fy) renderHarvest($("#pfHarvest"), reloadAll);
 }
 
 // ------------------------------------------------------------------ health
@@ -262,7 +266,8 @@ export function openImport() {
   const sample = "date,symbol,side,quantity,price,fees\n2025-01-15,RELIANCE.NS,buy,10,1250.50,20\n2025-03-02,TCS.NS,buy,5,3900,15\n2025-08-20,RELIANCE.NS,sell,4,1420,12";
   modal("Import trades from CSV", `<div class="field"><label>Choose a file — Zerodha tradebook or the simple format below</label><input type="file" id="csvFile" accept=".csv,text/csv"></div>
     <div class="field" style="margin-top:10px"><label>…or paste CSV</label><textarea id="csvText" placeholder="${esc(sample)}"></textarea></div>
-    <div class="fine">Columns: <b>date, symbol, side, quantity, price</b> [, fees, exchange]. Zerodha's tradebook is detected automatically (equity rows only).</div>
+    <div class="fine">Columns: <b>date, symbol, side, quantity, price</b> [, fees, exchange]. Zerodha's tradebook is detected automatically (equity rows only).
+      Mutual funds? <a href="#" id="casLink">Import your CAS PDF instead</a>: every fund from every fund house in one go.</div>
     <div id="csvPreview" style="margin-top:12px"></div><div class="form-err" id="csvErr"></div>
     <div class="modal-f"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="csvCheck">Preview</button><button class="btn primary" id="csvGo" disabled>Import</button></div>`,
   (root, close) => {
@@ -281,6 +286,7 @@ export function openImport() {
       } catch (err) { $("#csvPreview").innerHTML = ""; $("#csvErr").textContent = err.message; }
     }
     root.querySelector("#csvCheck").onclick = preview;
+    root.querySelector("#casLink").onclick = (e) => { e.preventDefault(); close(); openCasImport(reloadAll); };
     go.onclick = async () => {
       go.disabled = true;
       try { const r = await api("/portfolio/import", { method: "POST", body: { csv: text.value } }); close(); toast("Import complete", `${r.imported} trades added`); reloadAll(); }

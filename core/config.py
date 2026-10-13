@@ -42,6 +42,13 @@ _ENV_VARS: dict[str, str] = {
     "upstox_api_key": "UPSTOX_API_KEY",
     "upstox_api_secret": "UPSTOX_API_SECRET",
     "upstox_redirect_uri": "UPSTOX_REDIRECT_URI",
+    "auth": "KAIRO_AUTH",
+    "cookie_secure": "KAIRO_COOKIE_SECURE",
+    "smtp_host": "SMTP_HOST",
+    "smtp_port": "SMTP_PORT",
+    "smtp_user": "SMTP_USER",
+    "smtp_password": "SMTP_PASSWORD",
+    "smtp_from": "SMTP_FROM",
 }
 
 
@@ -90,6 +97,18 @@ class Settings(BaseModel):
     upstox_api_key: SecretStr | None = None
     upstox_api_secret: SecretStr | None = None
     upstox_redirect_uri: str = "http://127.0.0.1:8000/broker/upstox/callback"
+
+    # --- Accounts ----------------------------------------------------------
+    # "on": sign-up / log-in, each account with its own data and optional 4-digit app PIN.
+    # "off": the old single-user mode (everything in db_path), used by the tests.
+    auth: Literal["on", "off"] = "on"
+    cookie_secure: bool = False            # set true when served over HTTPS
+    # Optional email for password-reset codes; without it the code is written to the server log.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
 
     @classmethod
     def from_env(cls, env_file: str | Path | None = PROJECT_ROOT / ".env") -> Settings:

@@ -126,7 +126,11 @@ export async function api(path, opts = {}) {
     const d = body?.detail;
     const msg = Array.isArray(d) ? d.map((e) => `${e.loc?.slice(1).join(".") || "input"}: ${e.msg}`).join("; ")
       : typeof d === "string" ? d : d?.message || `Request failed (HTTP ${r.status})`;
-    const err = new Error(msg); err.status = r.status; err.body = body; throw err;
+    const err = new Error(msg); err.status = r.status; err.body = body;
+    // Signed out, or the app PIN is needed: the account screens (auth.js) take over.
+    if ((r.status === 401 && d?.code === "AUTH_REQUIRED") || (r.status === 423 && d?.code === "LOCKED"))
+      window.dispatchEvent(new CustomEvent("kairo:auth", { detail: { status: r.status } }));
+    throw err;
   }
   return body;
 }

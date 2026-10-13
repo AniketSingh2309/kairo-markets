@@ -47,8 +47,19 @@ async def warm_up(delay_s: float = 1.0) -> None:
     await step("explore screens", screens(universe=None, horizon=10, registry=registry, provider=provider))
     await step("screener", screener(universe=None, symbols=None, refresh=False, registry=registry, provider=provider))
     from api.options import RECORDER, get_nse
-    RECORDER.ensure_running(get_nse(), deps.get_store())  # PCR through the day for NIFTY / BANKNIFTY
+    RECORDER.ensure_running(get_nse(), deps.get_shared_store())  # PCR through the day for NIFTY / BANKNIFTY
     log.info("warm-up: option-chain recorder started")
+    # Every account's pending paper orders / GTTs / super orders and price alerts keep working after a
+    # restart, even before that user opens the app again.
+    from api.trading import OPEN, trader_for
+    for store in deps.all_stores():
+        try:
+            if store.paper_orders(OPEN) or store.gtts("active") or store.supers(("pending", "active")):
+                trader_for(store).ensure_running()
+            if store.list_alerts("active"):
+                deps.alert_engine_for(store).ensure_running()
+        except Exception as exc:  # noqa: BLE001 - one bad account must not stop the others
+            log.warning("warm-up: resuming an account failed: %s", exc)
     funds = getattr(provider, "funds", None)
     if funds is not None:
         await step("fund rankings", run_in_threadpool(RANKINGS.get, funds.data))

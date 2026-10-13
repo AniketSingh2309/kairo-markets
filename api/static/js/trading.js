@@ -2,7 +2,7 @@
 import { $, esc, api, store, toast, modal, fmt, money, pctTxt, tone, splitSym } from "./core.js";
 
 const TR = { status: null, sub: store.get("kairo-trade-sub", "positions"), data: {}, timer: 0, box: null, openSymbol: null };
-const SUBS = [["positions", "Positions"], ["orders", "Orders"], ["gtt", "GTT"], ["baskets", "Baskets"], ["holdings", "Holdings"], ["funds", "Funds"]];
+const SUBS = [["positions", "Positions"], ["orders", "Orders"], ["gtt", "GTT · Super"], ["baskets", "Baskets"], ["holdings", "Holdings"], ["funds", "Funds"]];
 const isOpt = (s) => (s || "").startsWith("OPT:");
 export const tradable = (sym) => isOpt(sym) || /\.(NS|BO)$/.test(sym || "");
 const live = () => TR.status?.mode === "upstox";
@@ -23,20 +23,29 @@ export function renderBadge() {
   b.title = live() ? "Orders go to your Upstox account with real money" : "Practice trading with virtual money";
 }
 
+/** Tell the chart (and anything else listening) that orders changed, so lines and lists refresh. */
+const changed = () => window.dispatchEvent(new CustomEvent("kairo:orders"));
+
 // ------------------------------------------------------------------ order ticket
-export async function openTicket({ symbol, side = "BUY", ltp = null, label = "" }) {
+/** `preset` pre-fills the ticket, e.g. from Kai's plan or a click on the chart:
+ *  { mode: "regular" | "super" | "gtt", type, price, trigger, qty, product, target, stop, trail }. */
+export async function openTicket({ symbol, side = "BUY", ltp = null, label = "", preset = null }) {
   if (!tradable(symbol)) { toast("Can't trade this", "Indices can't be traded. Open a stock or an option.", "err"); return; }
   if (!TR.status) await refreshStatus();
   let funds = null;
   try { funds = await api("/trading/funds"); } catch { /* shown as unknown */ }
   const opt = isOpt(symbol), name = label || splitSym(symbol)[0];
-  const st = { side, product: opt ? "INTRADAY" : store.get("kairo-ticket-product", "DELIVERY"), type: "MARKET", mode: "regular", gtt: "single" };
+  const st = { side, product: preset?.product || (opt ? "INTRADAY" : store.get("kairo-ticket-product", "DELIVERY")), type: preset?.type || "MARKET",
+    mode: live() ? "regular" : preset?.mode || "regular", gtt: "single" };
   const px = (n, l) => `<div class="field tk-${n}"><label>${l}</label><input name="${n}" type="number" min="0" step="0.05" value=""></div>`;
   modal(`${side === "BUY" ? "Buy" : "Sell"} ${name}`, `<form class="ticket ${side === "BUY" ? "buy" : "sell"}" id="ticket">
       <div class="tk-mode ${live() ? "live" : "paper"}">${live() ? "LIVE order · real money · Upstox" : "Paper trading · virtual money"}</div>
+      <div class="tk-warn" hidden></div>
       <div class="tk-row"><div class="seg tk-side"><button type="button" data-side="BUY">Buy</button><button type="button" data-side="SELL">Sell</button></div>
         <div class="tk-ltp">LTP <b class="num">${ltp != null ? inr(ltp) : "—"}</b></div></div>
-      <div class="tk-row"><div class="seg tk-kind"><button type="button" data-m="regular">Regular</button><button type="button" data-m="gtt" ${live() ? "disabled title=\"GTT orders work in paper mode for now\"" : ""}>GTT</button></div>
+      <div class="tk-row"><div class="seg tk-kind"><button type="button" data-m="regular">Regular</button>
+        <button type="button" data-m="super" ${live() ? "disabled title=\"Super orders work in paper mode for now\"" : "title=\"Entry + target + stop-loss (+ trailing stop) in one order\""}>Super</button>
+        <button type="button" data-m="gtt" ${live() ? "disabled title=\"GTT orders work in paper mode for now\"" : ""}>GTT</button></div>
         <div class="seg tk-prod"><button type="button" data-p="INTRADAY">Intraday</button><button type="button" data-p="DELIVERY">${opt ? "Carry forward" : "Delivery"}</button></div></div>
       <div class="tk-row tk-regular"><div class="seg tk-type">${["MARKET", "LIMIT", "SL", "SL-M"].map((t) => `<button type="button" data-t="${t}">${t === "MARKET" ? "Market" : t === "LIMIT" ? "Limit" : t}</button>`).join("")}</div></div>
       <div class="tk-row tk-gtt"><div class="seg tk-gttk"><button type="button" data-g="single">Single</button><button type="button" data-g="oco">OCO (target + stop-loss)</button></div></div>
@@ -45,6 +54,7 @@ export async function openTicket({ symbol, side = "BUY", ltp = null, label = "" 
         <div class="field tk-price"><label>Price</label><input name="price" type="number" min="0" step="0.05" value="${ltp != null ? ltp : ""}"></div>
         <div class="field tk-trig"><label>Trigger price</label><input name="trigger" type="number" min="0" step="0.05" value="${ltp != null ? ltp : ""}"></div>
         ${px("gtrig", "Trigger price")}${px("glimit", "Limit price (blank = market)")}${px("strig", "Stop-loss trigger")}${px("slimit", "Stop-loss limit (blank = market)")}
+        ${px("starget", "Target")}${px("sstop", "Stop-loss")}${px("strail", "Trailing stop, ₹ (optional)")}
       </div>
       <div class="tk-est" id="tkEst"></div>
       <label class="tk-confirm" ${live() ? "" : "hidden"}><input type="checkbox" name="confirm"> I understand this places a real order with real money through Upstox.</label>
@@ -54,34 +64,48 @@ export async function openTicket({ symbol, side = "BUY", ltp = null, label = "" 
     </form>`, (m, close) => {
     const f = m.querySelector("form");
     const num = (n) => (f[n].value === "" ? null : Number(f[n].value));
+    if (preset) {
+      const put = (n, v) => { if (v != null && isFinite(v)) f[n].value = Math.round(v * 20) / 20; };  // NSE tick size: 0.05
+      if (preset.qty) f.qty.value = preset.qty;
+      put("price", preset.price); put("trigger", preset.trigger); put("starget", preset.target); put("sstop", preset.stop); put("strail", preset.trail);
+    }
     const sync = () => {
-      const gtt = st.mode === "gtt", oco = gtt && st.gtt === "oco";
+      const gtt = st.mode === "gtt", oco = gtt && st.gtt === "oco", sup = st.mode === "super";
+      if (sup && !["MARKET", "LIMIT"].includes(st.type)) st.type = "MARKET";
       f.className = `ticket ${st.side === "BUY" ? "buy" : "sell"}`;
-      m.querySelector(".modal-t").textContent = `${gtt ? "GTT · " : ""}${st.side === "BUY" ? "Buy" : "Sell"} ${name}`;
+      m.querySelector(".modal-t").textContent = `${gtt ? "GTT · " : sup ? "Super · " : ""}${st.side === "BUY" ? "Buy" : "Sell"} ${name}`;
       f.querySelectorAll(".tk-side button").forEach((b) => b.classList.toggle("on", b.dataset.side === st.side));
       f.querySelectorAll(".tk-prod button").forEach((b) => b.classList.toggle("on", b.dataset.p === st.product));
       f.querySelectorAll(".tk-type button").forEach((b) => b.classList.toggle("on", b.dataset.t === st.type));
       f.querySelectorAll(".tk-kind button").forEach((b) => b.classList.toggle("on", b.dataset.m === st.mode));
       f.querySelectorAll(".tk-gttk button").forEach((b) => b.classList.toggle("on", b.dataset.g === st.gtt));
       f.querySelector(".tk-regular").hidden = gtt; f.querySelector(".tk-gtt").hidden = !gtt;
+      f.querySelectorAll(".tk-type button").forEach((b) => (b.hidden = sup && !["MARKET", "LIMIT"].includes(b.dataset.t)));
+      for (const n of ["starget", "sstop", "strail"]) f.querySelector(`.tk-${n}`).hidden = !sup;
       f.querySelector(".tk-price").hidden = gtt || !["LIMIT", "SL"].includes(st.type);
       f.querySelector(".tk-trig").hidden = gtt || !["SL", "SL-M"].includes(st.type);
       f.querySelector(".tk-gtrig").hidden = f.querySelector(".tk-glimit").hidden = !gtt;
       f.querySelector(".tk-strig").hidden = f.querySelector(".tk-slimit").hidden = !oco;
       f.querySelector(".tk-gtrig label").textContent = oco ? "Target trigger" : "Trigger price";
       f.querySelector(".tk-glimit label").textContent = oco ? "Target limit (blank = market)" : "Limit price (blank = market)";
-      f.querySelector(".tk-basket").hidden = gtt;
+      f.querySelector(".tk-basket").hidden = gtt || sup;
       f.querySelector(".tk-confirm").hidden = !live() || gtt;
       const qty = Number(f.qty.value) || 0;
       const p = gtt ? num("glimit") ?? num("gtrig") : ["LIMIT", "SL"].includes(st.type) ? Number(f.price.value) : st.type === "SL-M" ? Number(f.trigger.value) : ltp;
       const value = p ? qty * p : null, margin = value == null ? null : (opt || st.product === "DELIVERY" ? value : value * 0.2);
+      const tgt = num("starget"), stp = num("sstop"), risk = sup && p && stp ? Math.abs(p - stp) * qty : null, reward = sup && p && tgt ? Math.abs(tgt - p) * qty : null;
       m.querySelector("#tkEst").innerHTML = `<span>Order value <b class="num">${inr(value)}</b></span>
         <span>${opt || st.product === "DELIVERY" ? "Needs" : "Margin (5×)"} <b class="num">${st.side === "SELL" && (opt || st.product === "DELIVERY") ? "—" : inr(margin)}</b></span>
-        <span>Available <b class="num">${funds?.available != null ? inr(funds.available) : "—"}</b></span>`;
+        <span>Available <b class="num">${funds?.available != null ? inr(funds.available) : "—"}</b></span>
+        ${sup ? `<span>Risk <b class="num down">${inr(risk)}</b></span><span>Reward <b class="num up">${inr(reward)}</b></span>
+          <span>R:R <b class="num">${risk && reward ? (reward / risk).toFixed(1) + " : 1" : "—"}</b></span>` : ""}`;
       const go = f.querySelector(".tk-go");
-      go.textContent = gtt ? `Create GTT` : `${live() ? "Place LIVE " : ""}${st.side === "BUY" ? "Buy" : "Sell"}`;
+      go.textContent = gtt ? `Create GTT` : sup ? `Place super ${st.side === "BUY" ? "buy" : "sell"}` : `${live() ? "Place LIVE " : ""}${st.side === "BUY" ? "Buy" : "Sell"}`;
       go.className = `btn tk-go ${st.side === "BUY" ? "buy" : "sell"}`;
-      f.querySelector(".tk-fine").textContent = gtt
+      f.querySelector(".tk-fine").textContent = sup
+        ? "Super order: when the entry fills, the target and stop-loss go live together (whichever hits first exits, the other is cancelled). "
+          + "A trailing stop follows the best price by the amount you set and never moves back. Drag the lines on the chart to adjust them."
+        : gtt
         ? (oco ? "OCO: whichever of the target or the stop-loss triggers first places its order and cancels the other. Use it to protect a position you hold. "
           : "The order is placed when the price crosses the trigger. ") + "GTTs last a year and only fire during market hours. Funds are checked when they fire."
         : (opt ? "Buying an option pays the full premium. Writing (selling) one blocks 15% of the strike value as margin. "
@@ -107,6 +131,19 @@ export async function openTicket({ symbol, side = "BUY", ltp = null, label = "" 
     f.onsubmit = async (e) => {
       e.preventDefault();
       const go = f.querySelector(".tk-go");
+      if (st.mode === "super") {
+        const body = { ...order(), target: num("starget"), stop: num("sstop"), trail: num("strail") || null };
+        if (!body.target || !body.stop) { toast("Add a target and a stop-loss", "", "err"); return; }
+        go.disabled = true;
+        try {
+          const r = await api("/trading/super", { method: "POST", body });
+          if (r.status === "cancelled") { toast("Super order rejected", r.message, "err"); go.disabled = false; return; }
+          toast(r.status === "active" ? `${r.side === "BUY" ? "Bought" : "Sold"} ${fmt(r.qty, 0)} ${name}` : "Super order placed",
+            `Target ${fmt(r.target)} · stop ${fmt(r.stop)}${r.trail ? ` · trailing ${fmt(r.trail)}` : ""}${r.status === "pending" ? " · waiting for the entry" : ""}`, "ok");
+          close(); refreshPanel(); changed();
+        } catch (err) { toast("Couldn't place the super order", err.message, "err"); go.disabled = false; }
+        return;
+      }
       if (st.mode === "gtt") {
         const body = { symbol, kind: st.gtt, side: st.side, qty: Number(f.qty.value), product: st.product, trigger: num("gtrig"), limit: num("glimit") };
         if (st.gtt === "oco") { body.stop_trigger = num("strig"); body.stop_limit = num("slimit"); }
@@ -115,7 +152,7 @@ export async function openTicket({ symbol, side = "BUY", ltp = null, label = "" 
         try {
           const g = await api("/trading/gtt", { method: "POST", body });
           toast("GTT created", st.gtt === "oco" ? `Target ${fmt(g.trigger)} · stop-loss ${fmt(g.stop_trigger)}` : `Triggers at ${fmt(g.trigger)}`, "ok");
-          close(); refreshPanel();
+          close(); refreshPanel(); changed();
         } catch (err) { toast("Couldn't create the GTT", err.message, "err"); go.disabled = false; }
         return;
       }
@@ -131,11 +168,22 @@ export async function openTicket({ symbol, side = "BUY", ltp = null, label = "" 
           toast(o.status === "complete" ? `${o.side === "BUY" ? "Bought" : "Sold"} ${fmt(o.qty, 0)} ${name}` : "Order placed",
             o.status === "complete" ? `Filled at ${inr(o.fill_price)} (paper)` : `${o.order_type} order is open${o.message ? ": " + o.message : ""}`, "ok");
         }
-        close(); refreshPanel();
+        close(); refreshPanel(); changed();
       } catch (err) { toast("Order failed", err.message, "err"); go.disabled = false; }
     };
     sync();
+    if (!opt) riskNudges(symbol, m.querySelector(".tk-warn"));
   });
+}
+
+/** Exchange surveillance, F&O ban and liquidity warnings for a stock, shown in the ticket (like Kite's nudges). */
+async function riskNudges(symbol, box) {
+  try {
+    const r = await api(`/india/stock/${encodeURIComponent(symbol)}`, { timeout: 6000 });
+    if (!r.flags.length || !box.isConnected) return;
+    box.innerHTML = r.flags.map((f) => `<div class="tk-flag ${f.level}"><b>${f.level === "danger" ? "⚠ Caution" : "Heads-up"}</b> ${esc(f.text)}</div>`).join("");
+    box.hidden = false;
+  } catch { /* no nudges is fine */ }
 }
 
 // ------------------------------------------------------------------ baskets
@@ -182,7 +230,10 @@ async function load() {
   clearTimeout(TR.timer);
   if (!TR.box) return;
   const sub = TR.sub;
-  try { TR.data[sub] = await api(`/trading/${sub}`); }
+  try {
+    TR.data[sub] = await api(`/trading/${sub}`);
+    if (sub === "gtt" && !live()) TR.data.gtt.supers = (await api("/trading/super")).items;
+  }
   catch (err) { TR.data[sub] = { error: err.message }; }
   if (sub !== TR.sub || !TR.box) return;
   render();
@@ -202,9 +253,9 @@ function render() {
 
 function positionsHtml(d) {
   const rows = d.items || [];
-  if (!rows.length) return `<div class="tp-empty">No positions today. Use Buy / Sell to place an order.</div>`;
+  if (!rows.length) return `<div class="tp-empty">No positions today. Use Buy / Sell to place an order.${live() ? "" : ` Past trades are in your <a href="#/journal">trade journal</a>.`}</div>`;
   const total = rows.reduce((a, r) => a + (r.pnl || 0), 0);
-  return `<div class="tp-total">Today's P&L <b class="num">${pnl(total)}</b></div>` + rows.map((r) => `
+  return `<div class="tp-total">Today's P&L <b class="num">${pnl(total)}</b>${live() ? "" : ` <a class="tp-jr" href="#/journal">Journal →</a>`}</div>` + rows.map((r) => `
     <div class="tp-pos" data-sym="${esc(r.symbol)}">
       <div class="tp-l"><b>${esc(nameOf(r))}</b><small><span class="pill">${esc(r.product)}</span> ${r.qty ? `${r.qty > 0 ? "" : "Short "}${fmt(Math.abs(r.qty), 0)} @ ${fmt(r.avg)}` : "Closed"}</small></div>
       <div class="tp-r num">${pnl(r.pnl)}<small>LTP ${r.ltp != null ? fmt(r.ltp) : "—"}</small></div>
@@ -228,7 +279,15 @@ function ordersHtml(d) {
 function gttHtml(d) {
   if (live()) return `<div class="tp-empty">GTT orders work in paper mode for now. Switch to Paper in Funds to use them.</div>`;
   const rows = d.items || [];
-  if (!rows.length) return `<div class="tp-empty">No GTTs. In the order ticket choose <b>GTT</b> to set a trigger (or a target + stop-loss) that waits up to a year.</div>`;
+  const sups = d.supers || [], openSup = sups.filter((x) => ["pending", "active"].includes(x.status));
+  const supLine = (x) => `<div class="tp-ord" data-sym="${esc(x.symbol)}">
+      <div class="tp-l"><b><span class="pill ${x.side === "BUY" ? "up" : "down"}">${x.side}</span> ${esc(nameOf(x))} <span class="pill">SUPER</span></b>
+        <small>${fmt(x.qty, 0)} · ${x.fill_price ? `in @ ${fmt(x.fill_price)}` : x.entry_type === "LIMIT" ? `entry limit ${fmt(x.entry_price)}` : "market entry"} · target ${fmt(x.target)} · stop ${fmt(x.stop)}${x.trail ? ` (trailing ${fmt(x.trail)})` : ""}</small>
+        ${x.message ? `<small class="muted">${esc(x.message)}</small>` : ""}</div>
+      <div class="tp-r"><span class="st st-${esc(x.status)}">${esc(x.status)}</span></div>
+      ${["pending", "active"].includes(x.status) ? `<button class="btn sm" data-csup="${x.id}">Cancel</button>` : ""}</div>`;
+  const supHtml = openSup.length ? `<div class="tp-sub">Super orders</div>${openSup.map(supLine).join("")}` : "";
+  if (!rows.length) return supHtml || `<div class="tp-empty">No GTTs or super orders. In the order ticket choose <b>Super</b> for entry + target + stop-loss in one go, or <b>GTT</b> for a trigger that waits up to a year.</div>`;
   const active = rows.filter((g) => g.status === "active"), done = rows.filter((g) => g.status !== "active").slice(0, 20);
   const line = (g) => {
     const lim = (v) => (v ? ` → limit ${fmt(v)}` : " → market");
@@ -239,7 +298,7 @@ function gttHtml(d) {
       <div class="tp-r"><span class="st st-${esc(g.status)}">${esc(g.status)}</span>${g.status === "active" ? `<small class="muted">till ${new Date(g.expires_at).toLocaleDateString([], { day: "numeric", month: "short", year: "2-digit" })}</small>` : ""}</div>
       ${g.status === "active" ? `<button class="btn sm" data-cgtt="${g.id}">Cancel</button>` : ""}</div>`;
   };
-  return (active.length ? `<div class="tp-sub">Active</div>${active.map(line).join("")}` : "") + (done.length ? `<div class="tp-sub">History</div>${done.map(line).join("")}` : "");
+  return supHtml + (active.length ? `<div class="tp-sub">Active GTTs</div>${active.map(line).join("")}` : "") + (done.length ? `<div class="tp-sub">History</div>${done.map(line).join("")}` : "");
 }
 function basketsHtml(d) {
   const list = draft();
@@ -302,9 +361,15 @@ async function onClick(e) {
     catch (err) { toast("Couldn't cancel", err.message, "err"); }
     load(); return;
   }
+  const cs = t.closest("[data-csup]");
+  if (cs) {
+    try { const r = await api(`/trading/super/${cs.dataset.csup}`, { method: "DELETE" }); toast("Super order cancelled", r.message, "ok"); changed(); }
+    catch (err) { toast("Couldn't cancel", err.message, "err"); }
+    load(); return;
+  }
   const cg = t.closest("[data-cgtt]");
   if (cg) {
-    try { await api(`/trading/gtt/${cg.dataset.cgtt}`, { method: "DELETE" }); toast("GTT cancelled", "", "ok"); }
+    try { await api(`/trading/gtt/${cg.dataset.cgtt}`, { method: "DELETE" }); toast("GTT cancelled", "", "ok"); changed(); }
     catch (err) { toast("Couldn't cancel", err.message, "err"); }
     load(); return;
   }

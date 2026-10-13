@@ -29,6 +29,10 @@ from api.options import router as options_router
 from api.trading import router as trading_router
 from api.research import router as research_router
 from api.portfolio import router as portfolio_router
+from api.india import router as india_router
+from api.scans import router as scans_router
+from api.journal import router as journal_router
+from api.auth import router as auth_router
 from core.config import get_settings
 from core.schemas import AnalyzeRequest, AnalyzeResponse
 
@@ -51,6 +55,10 @@ app.include_router(funds_router)
 app.include_router(options_router)
 app.include_router(trading_router)
 app.include_router(research_router)
+app.include_router(india_router)
+app.include_router(scans_router)
+app.include_router(journal_router)
+app.include_router(auth_router)
 
 
 @app.on_event("startup")

@@ -108,6 +108,53 @@ CREATE TABLE IF NOT EXISTS baskets (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS paper_super (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,
+    side            TEXT NOT NULL,
+    qty             REAL NOT NULL,
+    product         TEXT NOT NULL,
+    entry_order_id  INTEGER,
+    target          REAL NOT NULL,
+    stop            REAL NOT NULL,
+    trail           REAL,
+    best            REAL,
+    init_stop       REAL,
+    gtt_id          INTEGER,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    message         TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fii_dii (
+    day       TEXT PRIMARY KEY,
+    fii_buy   REAL, fii_sell REAL, fii_net REAL,
+    dii_buy   REAL, dii_sell REAL, dii_net REAL
+);
+CREATE TABLE IF NOT EXISTS scans (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    universe      TEXT NOT NULL,
+    query         TEXT NOT NULL,
+    alert         INTEGER NOT NULL DEFAULT 0,
+    last_symbols  TEXT NOT NULL DEFAULT '[]',
+    last_run      TEXT,
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS iv_history (
+    symbol  TEXT NOT NULL,
+    day     TEXT NOT NULL,
+    atm_iv  REAL NOT NULL,
+    PRIMARY KEY (symbol, day)
+);
+CREATE TABLE IF NOT EXISTS journal_notes (
+    trade_key   TEXT PRIMARY KEY,
+    setup       TEXT NOT NULL DEFAULT '',
+    mistakes    TEXT NOT NULL DEFAULT '[]',
+    note        TEXT NOT NULL DEFAULT '',
+    rating      INTEGER,
+    updated_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -130,7 +177,14 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS won't add them)."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(paper_super)")}
+        if "init_stop" not in cols:
+            self._conn.execute("ALTER TABLE paper_super ADD COLUMN init_stop REAL")
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -248,6 +302,11 @@ class Store:
                           (order_id, fill["at"], fill["symbol"], fill["side"], fill["qty"], fill["price"], fill["product"]))
             return ok
 
+    def paper_order(self, order_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM paper_orders WHERE id = ?", (order_id,)).fetchone()
+        return dict(row) if row else None
+
     def paper_fills(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM paper_fills ORDER BY at, id").fetchall()
@@ -258,6 +317,8 @@ class Store:
             c.execute("DELETE FROM paper_fills")
             c.execute("DELETE FROM paper_orders")
             c.execute("DELETE FROM paper_gtt")
+            c.execute("DELETE FROM paper_super")
+            c.execute("DELETE FROM journal_notes")
 
     # -- settings -------------------------------------------------------------
 
@@ -314,6 +375,112 @@ class Store:
         with self._tx() as c:
             return c.execute(f"UPDATE paper_gtt SET {cols}, updated_at=? WHERE id=? AND status=?",
                              (*fields.values(), _now(), gtt_id, expect)).rowcount > 0
+
+    def gtt(self, gtt_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM paper_gtt WHERE id = ?", (gtt_id,)).fetchone()
+        return dict(row) if row else None
+
+    # -- paper super orders (entry + target + stop-loss, optional trailing stop) -------
+
+    def add_super(self, row: dict[str, Any]) -> int:
+        now = _now()
+        with self._tx() as c:
+            cur = c.execute(
+                "INSERT INTO paper_super (symbol, side, qty, product, entry_order_id, target, stop, init_stop, trail, status, message,"
+                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (row["symbol"], row["side"], row["qty"], row["product"], row.get("entry_order_id"), row["target"], row["stop"], row["stop"],
+                 row.get("trail"), row.get("status", "pending"), row.get("message", ""), now, now))
+            return int(cur.lastrowid)
+
+    def supers(self, statuses: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if statuses:
+                marks = ",".join("?" * len(statuses))
+                rows = self._conn.execute(f"SELECT * FROM paper_super WHERE status IN ({marks}) ORDER BY id", statuses).fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM paper_super ORDER BY id DESC LIMIT 200").fetchall()
+        return [dict(r) for r in rows]
+
+    def super(self, super_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM paper_super WHERE id = ?", (super_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_super(self, super_id: int, *, expect: tuple[str, ...] = ("pending", "active"), **fields: Any) -> bool:
+        cols = ", ".join(f"{k}=?" for k in fields)
+        marks = ",".join("?" * len(expect))
+        with self._tx() as c:
+            return c.execute(f"UPDATE paper_super SET {cols}, updated_at=? WHERE id=? AND status IN ({marks})",
+                             (*fields.values(), _now(), super_id, *expect)).rowcount > 0
+
+    # -- FII / DII daily flows (NSE publishes one session at a time; we keep the history) --------
+
+    def save_flow(self, day: str, fii: dict[str, Any] | None, dii: dict[str, Any] | None) -> None:
+        f, d = fii or {}, dii or {}
+        with self._tx() as c:
+            c.execute("INSERT INTO fii_dii (day, fii_buy, fii_sell, fii_net, dii_buy, dii_sell, dii_net) VALUES (?,?,?,?,?,?,?)"
+                      " ON CONFLICT(day) DO UPDATE SET fii_buy=excluded.fii_buy, fii_sell=excluded.fii_sell, fii_net=excluded.fii_net,"
+                      " dii_buy=excluded.dii_buy, dii_sell=excluded.dii_sell, dii_net=excluded.dii_net",
+                      (day, f.get("buy"), f.get("sell"), f.get("net"), d.get("buy"), d.get("sell"), d.get("net")))
+
+    def flows(self, limit: int = 60) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM fii_dii ORDER BY day DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- saved screener scans (optionally alerting on new matches) ---------------------
+
+    def scans(self) -> list[dict[str, Any]]:
+        import json as _json
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM scans ORDER BY id DESC").fetchall()
+        return [{**dict(r), "alert": bool(r["alert"]), "last_symbols": _json.loads(r["last_symbols"])} for r in rows]
+
+    def save_scan(self, name: str, universe: str, query: str, alert: bool, scan_id: int | None = None) -> int:
+        with self._tx() as c:
+            if scan_id is None:
+                cur = c.execute("INSERT INTO scans (name, universe, query, alert, created_at) VALUES (?,?,?,?,?)",
+                                (name, universe, query, int(alert), _now()))
+                return int(cur.lastrowid)
+            c.execute("UPDATE scans SET name=?, universe=?, query=?, alert=? WHERE id=?", (name, universe, query, int(alert), scan_id))
+            return scan_id
+
+    def scan_ran(self, scan_id: int, symbols: list[str]) -> None:
+        import json as _json
+        with self._tx() as c:
+            c.execute("UPDATE scans SET last_symbols=?, last_run=? WHERE id=?", (_json.dumps(symbols), _now(), scan_id))
+
+    def delete_scan(self, scan_id: int) -> bool:
+        with self._tx() as c:
+            return c.execute("DELETE FROM scans WHERE id = ?", (scan_id,)).rowcount > 0
+
+    # -- daily at-the-money IV per underlying (for IV rank / percentile) ------------------
+
+    def save_iv(self, symbol: str, day: str, atm_iv: float) -> None:
+        with self._tx() as c:
+            c.execute("INSERT INTO iv_history (symbol, day, atm_iv) VALUES (?,?,?) ON CONFLICT(symbol, day) DO UPDATE SET atm_iv=excluded.atm_iv",
+                      (symbol, day, atm_iv))
+
+    def iv_history(self, symbol: str, days: int = 365) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT day, atm_iv FROM iv_history WHERE symbol=? ORDER BY day DESC LIMIT ?", (symbol, days)).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    # -- trade journal notes (keyed by round-trip trade) -----------------------------------
+
+    def journal_notes(self) -> dict[str, dict[str, Any]]:
+        import json as _json
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM journal_notes").fetchall()
+        return {r["trade_key"]: {**dict(r), "mistakes": _json.loads(r["mistakes"])} for r in rows}
+
+    def save_journal_note(self, key: str, setup: str, mistakes: list[str], note: str, rating: int | None) -> None:
+        import json as _json
+        with self._tx() as c:
+            c.execute("INSERT INTO journal_notes (trade_key, setup, mistakes, note, rating, updated_at) VALUES (?,?,?,?,?,?)"
+                      " ON CONFLICT(trade_key) DO UPDATE SET setup=excluded.setup, mistakes=excluded.mistakes, note=excluded.note,"
+                      " rating=excluded.rating, updated_at=excluded.updated_at", (key, setup, _json.dumps(mistakes), note, rating, _now()))
 
     # -- baskets --------------------------------------------------------------------
 

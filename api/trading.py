@@ -165,6 +165,112 @@ class PaperTrader:
     def gtts(self) -> list[dict]:
         return [view_gtt(g) for g in self.store.gtts()]
 
+    # --- super orders (entry + target + stop-loss, optional trailing stop) -----------------------
+    async def place_super(self, s: tr.SuperIn) -> dict:
+        if s.order_type == "MARKET" and (ltp := await self.ltp(s.symbol)) is not None and (why := tr.legs_ok(s.side, s.target, s.stop, ltp)):
+            raise HTTPException(status_code=422, detail=why[0].upper() + why[1:])
+        async with self.lock:
+            order = await self._place(s.entry(), note="Super order entry")
+            sid = self.store.add_super({**s.model_dump(include={"symbol", "side", "qty", "product", "target", "stop", "trail"}),
+                                        "entry_order_id": order["id"]})
+            if order["status"] == "rejected":
+                self.store.update_super(sid, status="cancelled", message=f"Entry rejected: {order['message']}")
+            else:
+                await self._run_supers(self.now())
+            return self.super_view(sid)
+
+    async def _run_supers(self, now: dt.datetime) -> None:
+        """Attach the target + stop once the entry fills, trail the stop, and close out finished ones."""
+        rows = self.store.supers(("pending", "active"))
+        if not rows:
+            return
+        ltps = await self.ltps({r["symbol"] for r in rows}) if tr.market_open(now) else {}
+        book = self.book()
+        for r in rows:
+            long, exit_side = r["side"] == "BUY", "SELL" if r["side"] == "BUY" else "BUY"
+            if r["status"] == "pending":
+                e = self.store.paper_order(r["entry_order_id"]) or {"status": "cancelled", "message": "entry order missing"}
+                if e["status"] in ("cancelled", "rejected"):
+                    self.store.update_super(r["id"], status="cancelled", message=f"Entry {e['status']}: {e['message']}".rstrip(": "))
+                    continue
+                if e["status"] != "complete":
+                    continue
+                fill = e["fill_price"]
+                ltp = ltps.get(r["symbol"], fill)
+                past = (ltp <= r["stop"] or ltp >= r["target"]) if long else (ltp >= r["stop"] or ltp <= r["target"])
+                if past:  # the price jumped through a leg while the entry filled: exit straight away
+                    leg = "stop-loss" if ((ltp <= r["stop"]) if long else (ltp >= r["stop"])) else "target"
+                    out = await self._place(tr.OrderIn(symbol=r["symbol"], side=exit_side, qty=int(r["qty"]), product=r["product"]),
+                                            note=f"Super order #{r['id']}: {leg} already passed at entry")
+                    self.store.update_super(r["id"], status="done", best=fill,
+                                            message=f"Entry filled at {fill:g}, but the {leg} was already passed; exited ({out['status']})")
+                    continue
+                gid = self.store.add_gtt({"symbol": r["symbol"], "kind": "oco", "side": exit_side, "qty": r["qty"], "product": r["product"],
+                                          "trigger": r["target"], "stop_trigger": r["stop"],
+                                          "expires_at": (now + dt.timedelta(days=365)).isoformat()})
+                self.store.update_super(r["id"], status="active", gtt_id=gid, best=fill,
+                                        message=f"Entry filled at {fill:g}; target and stop-loss are live")
+                continue
+            g = self.store.gtt(r["gtt_id"]) if r["gtt_id"] else None
+            if g is None or g["status"] != "active":
+                self.store.update_super(r["id"], status="done", message=(g or {}).get("message") or "Finished")
+                continue
+            ln = book.lines.get((r["symbol"], r["product"]))
+            held = ln.qty if ln else 0.0
+            if (held <= 1e-9) if long else (held >= -1e-9):  # exited by hand or squared off: the legs must not reopen it
+                self.store.update_gtt(g["id"], status="cancelled", message="Position closed; legs cancelled")
+                self.store.update_super(r["id"], status="done", message="Position was closed (exit or square-off); target and stop-loss cancelled")
+                continue
+            if abs(held) < g["qty"] - 1e-9:
+                self.store.update_gtt(g["id"], qty=abs(held))
+            ltp = ltps.get(r["symbol"])
+            if r["trail"] and ltp is not None:
+                best = max(r["best"] or ltp, ltp) if long else min(r["best"] or ltp, ltp)
+                stop = round(tr.trail_stop(r["side"], best, r["trail"], g["stop_trigger"]), 2)
+                if stop != g["stop_trigger"]:
+                    self.store.update_gtt(g["id"], stop_trigger=stop)
+                    self.store.update_super(r["id"], stop=stop, best=best, message=f"Trailing stop moved to {stop:g}")
+                elif best != r["best"]:
+                    self.store.update_super(r["id"], best=best)
+
+    async def modify_super(self, super_id: int, target: float | None, stop: float | None) -> dict:
+        async with self.lock:
+            r = self.store.super(super_id)
+            if not r or r["status"] not in ("pending", "active"):
+                raise HTTPException(status_code=409, detail="That super order is no longer open")
+            target, stop = target or r["target"], stop or r["stop"]
+            if r["status"] == "pending":
+                ref = (self.store.paper_order(r["entry_order_id"]) or {}).get("price")
+            else:
+                ref = await self.ltp(r["symbol"])
+            why = tr.legs_ok(r["side"], target, stop, ref)
+            if why:
+                raise HTTPException(status_code=422, detail=why[0].upper() + why[1:])
+            self.store.update_super(super_id, target=round(target, 2), stop=round(stop, 2), message="Target / stop-loss changed by you")
+            if r["status"] == "active" and r["gtt_id"]:
+                self.store.update_gtt(r["gtt_id"], trigger=round(target, 2), stop_trigger=round(stop, 2))
+            return self.super_view(super_id)
+
+    async def cancel_super(self, super_id: int) -> dict:
+        async with self.lock:
+            r = self.store.super(super_id)
+            if not r or r["status"] not in ("pending", "active"):
+                raise HTTPException(status_code=409, detail="That super order is no longer open")
+            if r["status"] == "pending":
+                self.store.update_paper_order(r["entry_order_id"], expect=OPEN, status="cancelled", message="Super order cancelled")
+                self.store.update_super(super_id, status="cancelled", message="Cancelled before the entry filled")
+            else:
+                if r["gtt_id"]:
+                    self.store.update_gtt(r["gtt_id"], status="cancelled", message="Super order cancelled")
+                self.store.update_super(super_id, status="cancelled", message="Target and stop-loss removed; the position stays open")
+            return self.super_view(super_id)
+
+    def super_view(self, super_id: int) -> dict:
+        return view_super(self.store.super(super_id), self.store)
+
+    def supers(self) -> list[dict]:
+        return [view_super(r, self.store) for r in self.store.supers()]
+
     async def cancel(self, order_id: int) -> bool:
         async with self.lock:
             return self.store.update_paper_order(order_id, expect=OPEN, status="cancelled", message="Cancelled by you")
@@ -215,24 +321,28 @@ class PaperTrader:
             stale_intraday = tr.to_square_off(book)
             due = tr.is_trading_day(today) and tr.SQUARE_OFF <= t.time() < tr.SESSION_CLOSE
             symbols = {o["symbol"] for o in open_orders} | {ln.symbol for ln in stale_intraday}
-            if not symbols:
-                return
-            ltps = await self.ltps(symbols)
-            await self._match(open_orders, ltps)
-            # Intraday positions: closed at 15:20, or as soon as we can if one was left from an earlier day.
-            left_over = any(ln.realised_today == 0 and not ln.day_buy_qty and not ln.day_sell_qty for ln in stale_intraday)
-            if due or (left_over and tr.market_open(now)):
-                for o in self.store.paper_orders(OPEN):
-                    if o["product"] == "INTRADAY":
-                        self.store.update_paper_order(o["id"], expect=OPEN, status="cancelled", message="Cancelled at intraday square-off")
-                for ln in tr.to_square_off(self.book()):
-                    ltp = ltps.get(ln.symbol)
-                    if ltp is None:
-                        continue
-                    row = {"symbol": ln.symbol, "side": "SELL" if ln.qty > 0 else "BUY", "qty": abs(ln.qty), "order_type": "MARKET",
-                           "product": "INTRADAY", "status": "open", "session": today.isoformat(), "created_at": now.isoformat()}
-                    oid = self.store.add_paper_order(row)
-                    self._fill({**row, "id": oid}, ltp, "Auto square-off at 3:20 pm")
+            if symbols:
+                await self._match_and_square_off(now, t, today, open_orders, stale_intraday, due, symbols)
+            await self._run_supers(now)
+
+    async def _match_and_square_off(self, now, t, today, open_orders, stale_intraday, due, symbols) -> None:
+        """Match open orders at the latest prices; square off intraday positions at 15:20 (or when left over)."""
+        ltps = await self.ltps(symbols)
+        await self._match(open_orders, ltps)
+        # Intraday positions: closed at 15:20, or as soon as we can if one was left from an earlier day.
+        left_over = any(ln.realised_today == 0 and not ln.day_buy_qty and not ln.day_sell_qty for ln in stale_intraday)
+        if due or (left_over and tr.market_open(now)):
+            for o in self.store.paper_orders(OPEN):
+                if o["product"] == "INTRADAY":
+                    self.store.update_paper_order(o["id"], expect=OPEN, status="cancelled", message="Cancelled at intraday square-off")
+            for ln in tr.to_square_off(self.book()):
+                ltp = ltps.get(ln.symbol)
+                if ltp is None:
+                    continue
+                row = {"symbol": ln.symbol, "side": "SELL" if ln.qty > 0 else "BUY", "qty": abs(ln.qty), "order_type": "MARKET",
+                       "product": "INTRADAY", "status": "open", "session": today.isoformat(), "created_at": now.isoformat()}
+                oid = self.store.add_paper_order(row)
+                self._fill({**row, "id": oid}, ltp, "Auto square-off at 3:20 pm")
 
     async def run(self) -> None:
         while True:
@@ -284,6 +394,14 @@ def view_gtt(g: dict) -> dict:
             "created_at": g["created_at"], "expires_at": g["expires_at"]}
 
 
+def view_super(r: dict, store: Store) -> dict:
+    entry = store.paper_order(r["entry_order_id"]) if r["entry_order_id"] else None
+    return {"id": r["id"], "symbol": r["symbol"], "label": label(r["symbol"]), "side": r["side"], "qty": r["qty"], "product": r["product"],
+            "entry_type": (entry or {}).get("order_type"), "entry_price": (entry or {}).get("price"),
+            "fill_price": (entry or {}).get("fill_price"), "target": r["target"], "stop": r["stop"], "trail": r["trail"],
+            "status": r["status"], "message": r["message"], "created_at": r["created_at"]}
+
+
 def view_order(o: dict) -> dict:
     return {"id": o["id"], "symbol": o["symbol"], "label": label(o["symbol"]), "side": o["side"], "qty": o["qty"],
             "order_type": o["order_type"], "price": o["price"], "trigger_price": o["trigger_price"], "product": o["product"],
@@ -293,12 +411,17 @@ def view_order(o: dict) -> dict:
 _TRADERS: dict[int, PaperTrader] = {}
 
 
-def get_paper(store: Store = Depends(deps.get_store), provider=Depends(get_live_provider),
-              nse: NseClient = Depends(get_nse)) -> PaperTrader:
+def trader_for(store: Store, provider: Any = None, nse: NseClient | None = None) -> PaperTrader:
+    """One paper trader (and matching loop) per account's store."""
     trader = _TRADERS.get(id(store))
     if trader is None:
-        trader = _TRADERS[id(store)] = PaperTrader(store, provider, nse)
+        trader = _TRADERS[id(store)] = PaperTrader(store, provider or get_live_provider(), nse or get_nse())
     return trader
+
+
+def get_paper(store: Store = Depends(deps.get_store), provider=Depends(get_live_provider),
+              nse: NseClient = Depends(get_nse)) -> PaperTrader:
+    return trader_for(store, provider, nse)
 
 
 # ------------------------------------------------------------------------------------------ Upstox
@@ -535,6 +658,41 @@ async def delete_gtt(gtt_id: int, paper: PaperTrader = Depends(get_paper)) -> di
     if not await paper.cancel_gtt(gtt_id):
         raise HTTPException(status_code=409, detail="That GTT isn't active")
     return {"cancelled": gtt_id}
+
+
+@router.get("/trading/super")
+async def list_super(paper: PaperTrader = Depends(get_paper)) -> dict[str, Any]:
+    paper.ensure_running()
+    return {"items": paper.supers()}
+
+
+@router.post("/trading/super")
+async def create_super(body: dict[str, Any], store: Store = Depends(deps.get_store), paper: PaperTrader = Depends(get_paper),
+                       upstox: UpstoxBroker | None = Depends(get_upstox)) -> dict[str, Any]:
+    """Entry + target + stop-loss (+ optional trailing stop) in one order. Paper mode only for now."""
+    if mode_of(store, upstox) == "upstox":
+        raise HTTPException(status_code=409, detail="Super orders work in paper mode for now")
+    try:
+        s = tr.SuperIn(**body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors())) from None
+    paper.ensure_running()
+    return await paper.place_super(s)
+
+
+class SuperChange(BaseModel):
+    target: float | None = Field(None, gt=0)
+    stop: float | None = Field(None, gt=0)
+
+
+@router.patch("/trading/super/{super_id}")
+async def modify_super(super_id: int, body: SuperChange, paper: PaperTrader = Depends(get_paper)) -> dict[str, Any]:
+    return await paper.modify_super(super_id, body.target, body.stop)
+
+
+@router.delete("/trading/super/{super_id}")
+async def cancel_super(super_id: int, paper: PaperTrader = Depends(get_paper)) -> dict[str, Any]:
+    return await paper.cancel_super(super_id)
 
 
 @router.post("/trading/exit")

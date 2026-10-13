@@ -379,3 +379,100 @@ def test_basket_and_gtt_api(trader):
         assert c.delete(f"/trading/gtt/{g['id']}").status_code == 200
     finally:
         app.dependency_overrides.clear()
+
+
+# ------------------------------------------------------------------ super orders (entry + target + stop + trailing)
+
+def test_super_order_validation():
+    with pytest.raises(ValueError):
+        tr.SuperIn(symbol="TCS.NS", side="BUY", qty=1, target=1900, stop=2100)                    # stop above target on a buy
+    with pytest.raises(ValueError):
+        tr.SuperIn(symbol="TCS.NS", side="BUY", qty=1, order_type="LIMIT", price=2200, target=2100, stop=1900)  # entry outside legs
+    with pytest.raises(ValueError):
+        tr.SuperIn(symbol="TCS.NS", side="BUY", qty=1, order_type="SL-M", trigger_price=2000, target=2100, stop=1900)
+    assert tr.trail_stop("BUY", best=2100, trail=40, stop=1950) == 2060
+    assert tr.trail_stop("BUY", best=2000, trail=80, stop=1950) == 1950                         # never moves back
+    assert tr.trail_stop("SELL", best=1900, trail=40, stop=2050) == 1940
+
+
+def test_paper_super_target_exit(trader):
+    t, clock, prices = trader
+    s = run(t.place_super(tr.SuperIn(symbol="TCS.NS", side="BUY", qty=10, target=2100, stop=1950)))
+    assert s["status"] == "active" and s["fill_price"] == 2000
+    g = t.gtts()[0]
+    assert g["kind"] == "oco" and g["side"] == "SELL" and g["trigger"] == 2100 and g["stop_trigger"] == 1950
+    prices["TCS.NS"] = 2105.0
+    run(t.tick()); run(t.tick())
+    s = t.supers()[0]
+    assert s["status"] == "done" and "Target hit" in s["message"]
+    assert run(t.positions())[0]["realised"] == 1050
+
+
+def test_paper_super_trailing_stop(trader):
+    t, clock, prices = trader
+    run(t.place_super(tr.SuperIn(symbol="TCS.NS", side="BUY", qty=10, target=2300, stop=1950, trail=40)))
+    prices["TCS.NS"] = 2100.0; run(t.tick())
+    assert t.supers()[0]["stop"] == 2060 and t.gtts()[0]["stop_trigger"] == 2060
+    prices["TCS.NS"] = 2080.0; run(t.tick())
+    assert t.supers()[0]["stop"] == 2060                                                         # a dip doesn't lower it
+    prices["TCS.NS"] = 2055.0; run(t.tick()); run(t.tick())
+    assert t.supers()[0]["status"] == "done"
+    assert run(t.positions())[0]["realised"] == 550                                               # locked in by the trail
+
+
+def test_paper_super_limit_entry_cancel_and_modify(trader):
+    t, clock, prices = trader
+    s = run(t.place_super(tr.SuperIn(symbol="TCS.NS", side="BUY", qty=5, order_type="LIMIT", price=1950, target=2100, stop=1900)))
+    assert s["status"] == "pending"
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        run(t.modify_super(s["id"], target=None, stop=1960))                                     # stop above the limit entry
+    assert run(t.modify_super(s["id"], target=2150, stop=None))["target"] == 2150
+    c = run(t.cancel_super(s["id"]))
+    assert c["status"] == "cancelled" and t._order(s_entry := t.orders()[0]["id"])["status"] == "cancelled"
+    prices["TCS.NS"] = 1940.0; run(t.tick())
+    assert t._order(s_entry)["status"] == "cancelled"                                           # never fills after cancel
+
+
+def test_paper_super_modify_live_legs_and_market_check(trader):
+    t, clock, prices = trader
+    s = run(t.place_super(tr.SuperIn(symbol="TCS.NS", side="BUY", qty=2, target=2100, stop=1950)))
+    m = run(t.modify_super(s["id"], target=2200, stop=1980))
+    g = t.gtts()[0]
+    assert (m["target"], m["stop"]) == (2200, 1980) and (g["trigger"], g["stop_trigger"]) == (2200, 1980)
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        run(t.place_super(tr.SuperIn(symbol="TCS.NS", side="BUY", qty=1, target=1990, stop=1900)))   # market price already past target
+
+
+def test_paper_super_square_off_cancels_legs(trader):
+    t, clock, prices = trader
+    run(t.place_super(tr.SuperIn(symbol="TCS.NS", side="BUY", qty=10, product="INTRADAY", target=2100, stop=1950)))
+    clock.t = at(15, 21); run(t.tick())
+    s = t.supers()[0]
+    assert s["status"] == "done" and "square-off" in s["message"] and t.gtts()[0]["status"] == "cancelled"
+    clock.t = at(15, 22); prices["TCS.NS"] = 2150.0; run(t.tick())
+    assert not tr.to_square_off(t.book())                                                         # the target can't reopen anything
+    assert sum(1 for o in t.orders() if o["status"] == "complete") == 2
+
+
+def test_super_api(trader, monkeypatch):
+    t, clock, prices = trader
+    from fastapi.testclient import TestClient
+    import api.trading as at_
+    from api.main import app
+    app.dependency_overrides[at_.get_paper] = lambda: t
+    app.dependency_overrides[at_.get_upstox] = lambda: None
+    try:
+        c = TestClient(app)
+        r = c.post("/trading/super", json={"symbol": "TCS.NS", "side": "BUY", "qty": 1, "target": 1900, "stop": 2100})
+        assert r.status_code == 422 and "stop-loss must be below" in r.json()["detail"]
+        r = c.post("/trading/super", json={"symbol": "TCS.NS", "side": "BUY", "qty": 1, "target": 2100, "stop": 1950, "trail": 20})
+        assert r.status_code == 200 and r.json()["status"] == "active"
+        sid = r.json()["id"]
+        assert c.patch(f"/trading/super/{sid}", json={"stop": 1990}).json()["stop"] == 1990
+        assert c.get("/trading/super").json()["items"][0]["id"] == sid
+        assert c.delete(f"/trading/super/{sid}").json()["status"] == "cancelled"
+        assert c.delete(f"/trading/super/{sid}").status_code == 409
+    finally:
+        app.dependency_overrides.clear()

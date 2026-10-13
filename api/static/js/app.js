@@ -8,8 +8,12 @@ import { initNews, showNews } from "./news.js";
 import { initAlerts, showAlerts, openAlertDialog } from "./alerts.js";
 import { initExplore, showExplore, hideExplore } from "./explore.js";
 import { initFunds, showFunds, searchFunds } from "./funds.js";
+import { initPulse, showPulse } from "./india.js";
+import { initAcademy, showAcademy } from "./academy.js";
+import { initJournal, showJournal } from "./journal.js";
+import { ensureSignedIn } from "./auth.js";
 
-const VIEWS = ["explore", "markets", "terminal", "funds", "portfolio", "screener", "news", "alerts"];
+const VIEWS = ["explore", "markets", "terminal", "funds", "portfolio", "pulse", "learn", "journal", "screener", "news", "alerts"];
 
 // ---------------------------------------------------------------- theme
 function toggleTheme() {
@@ -99,7 +103,9 @@ sugg.addEventListener("mousedown", (e) => { const b = e.target.closest("button")
 const PAGES = [["explore", "Explore", "Market movers, sectors, screens"], ["markets", "Stocks", "Live chart, outlook, research"],
   ["terminal", "Terminal", "Full-screen trading chart"], ["funds", "Mutual funds", "Search, top funds, calculators"], ["funds/compare", "Compare funds", "Side by side"],
   ["portfolio", "Portfolio", "Holdings, XIRR, P&L"], ["portfolio/tax", "Tax P&L", "Capital gains estimate"],
-  ["portfolio/health", "Portfolio health check", "Diversification and risk"], ["screener", "Screener", "Scan a market"],
+  ["portfolio/health", "Portfolio health check", "Diversification and risk"], ["pulse", "Pulse", "FII/DII flows, deals, results calendar, IPOs"],
+  ["pulse/calendar", "Results & dividends calendar", "Upcoming events for your stocks"], ["pulse/ipos", "IPOs", "Open, upcoming and recently listed"],
+  ["pulse/deals", "Bulk & block deals", "Large trades in the last session"], ["learn", "Kai Academy", "Trading course with quizzes"], ["journal", "Trade journal", "Your paper trades, notes and stats"], ["screener", "Screener", "Scan a market"],
   ["news", "News", "Headlines for your stocks"], ["alerts", "Alerts", "Price alerts"]];
 const ACTIONS = [["Add a trade", "Portfolio", () => openAddTrade()], ["Import trades from CSV", "Portfolio", () => openImport()],
   ["New price alert", "Alerts", () => openAlertDialog()], ["Toggle light / dark theme", "Appearance", toggleTheme]];
@@ -181,6 +187,9 @@ function route(r) {
   else if (view === "terminal") showTerminal(r.params);
   else if (view === "funds") showFunds(r.sub, r.params);
   else if (view === "portfolio") showPortfolio(r.sub);
+  else if (view === "pulse") showPulse(r.sub);
+  else if (view === "learn") showAcademy(r.sub);
+  else if (view === "journal") showJournal();
   else if (view === "screener") showScreener();
   else if (view === "news") showNews(r.sub, r.params);
   else if (view === "alerts") showAlerts();
@@ -193,9 +202,11 @@ onRoute(route);
     const h = await api("/health");
     app.provider = h.data_provider; app.llm = h.llm_configured; app.model = h.model;
   } catch { /* defaults */ }
+  await ensureSignedIn();  // sign-up / log-in / PIN first: personal data needs an unlocked session
+  window.addEventListener("kairo:unlocked", () => route(parseRoute()));
   const legacy = new URLSearchParams(location.search).get("symbol");
   if (legacy && !location.hash) history.replaceState(null, "", "/" + `#/markets?symbol=${encodeURIComponent(legacy)}`);
-  initMarkets(); initPortfolio(); initNews(); initAlerts(); initStrip(); initFunds(); initTerminal();
+  initMarkets(); initPortfolio(); initNews(); initAlerts(); initStrip(); initFunds(); initTerminal(); initPulse(); initAcademy(); initJournal();
   await Promise.all([initScreener(), initExplore()]);
   route(parseRoute());
 })();

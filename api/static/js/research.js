@@ -1,7 +1,7 @@
 // Stock research on the stock page: fundamentals, financials, scorecard + peers, shareholding pattern.
 import { $, esc, api, fmt, pctTxt, tone, splitSym, navigate } from "./core.js";
 
-const R = { fund: {}, score: {}, shp: {}, fin: { metric: "revenue", freq: "quarterly" }, shpQ: 0, sym: "" };
+const R = { fund: {}, score: {}, shp: {}, india: {}, fin: { metric: "revenue", freq: "quarterly" }, shpQ: 0, sym: "" };
 const researchable = (s) => !!s && !s.startsWith("^") && !s.includes("=") && !/-USD$/.test(s) && !s.startsWith("MF");
 const pct = (v, d = 1) => (v == null ? "—" : `${(v * 100).toFixed(d)}%`);
 const x = (v, d = 2) => (v == null ? "—" : `${fmt(v, d)}x`);
@@ -20,7 +20,7 @@ function big(v, cur) {
 export function loadResearch(sym) {
   R.sym = sym; R.shpQ = 0;
   const show = researchable(sym);
-  for (const id of ["#fundCard", "#finCard", "#scoreCard", "#shpCard", "#peerCard"]) $(id).hidden = !show;
+  for (const id of ["#fundCard", "#finCard", "#scoreCard", "#shpCard", "#peerCard", "#indiaCard"]) $(id).hidden = !show;
   if (!show) return;
   renderAll();
   const get = async (bucket, url) => {
@@ -31,11 +31,35 @@ export function loadResearch(sym) {
   };
   get(R.fund, `/fundamentals/${encodeURIComponent(sym)}`);
   get(R.score, `/fundamentals/${encodeURIComponent(sym)}/scorecard`);
-  if (/\.(NS|BO)$/.test(sym)) get(R.shp, `/shareholding/${encodeURIComponent(sym)}`);
+  if (/\.(NS|BO)$/.test(sym)) { get(R.shp, `/shareholding/${encodeURIComponent(sym)}`); get(R.india, `/india/stock/${encodeURIComponent(sym)}`); }
   else { $("#shpCard").hidden = true; $("#shpCard").innerHTML = ""; }
+  $("#indiaCard").hidden = !/\.(NS|BO)$/.test(sym);
 }
 
-function renderAll() { renderFund(); renderFin(); renderScore(); renderPeers(); renderShp(); }
+function renderAll() { renderIndia(); renderFund(); renderFin(); renderScore(); renderPeers(); renderShp(); }
+
+// ------------------------------------------------------------------ India: surveillance, delivery, events, large deals (NSE)
+function renderIndia() {
+  const box = $("#indiaCard"); if (!box || box.hidden) return;
+  const d = R.india[R.sym];
+  const head = `<div class="card-h"><span class="card-t">India pulse</span><a class="muted rs-src" href="#/pulse">NSE · open Pulse</a></div>`;
+  if (!d || d.loading) { box.innerHTML = head + skel(70); return; }
+  if (d.error) { box.innerHTML = head + failed(`Couldn't load NSE data: ${d.error}`); return; }
+  const x = d.data, dv = x.delivery, cr = (v) => `₹${Math.round(v).toLocaleString("en-IN")} cr`;
+  const flags = x.flags.map((f) => `<div class="tk-flag ${f.level}"><b>${f.level === "danger" ? "⚠ Caution" : "Heads-up"}</b> ${esc(f.text)}</div>`).join("");
+  const deliv = dv ? `<div class="stats in-stats">
+      <div class="stat"><div class="k">Delivery (${new Date(dv.date + "T00:00:00").toLocaleDateString([], { day: "numeric", month: "short" })})</div><div class="v num">${dv.delivery_pct?.toFixed(1)}%</div></div>
+      <div class="stat"><div class="k">Usual delivery</div><div class="v num">${dv.avg_delivery_pct != null ? dv.avg_delivery_pct.toFixed(1) + "%" : "—"}</div></div>
+      <div class="stat"><div class="k">Delivered vs usual</div><div class="v num ${dv.delivery_x >= 1.5 ? "up" : ""}">${dv.delivery_x != null ? dv.delivery_x.toFixed(1) + "×" : "—"}</div></div>
+      <div class="stat"><div class="k">Turnover</div><div class="v num">${cr(dv.turnover_cr)}</div></div></div>` : "";
+  const day = (iso) => new Date(iso + "T00:00:00").toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  const ev = x.upcoming.length ? `<div class="rs-sub">Coming up</div>${x.upcoming.map((e) => `<div class="in-row"><b>${day(e.date)}</b>
+      <span>${e.type === "meeting" ? `<span class="pill ${e.results ? "up" : ""}">${e.results ? "RESULTS" : "BOARD"}</span>${esc(e.purpose)}` : `<span class="pill">${esc(e.kind.toUpperCase())}</span>${esc(e.subject)}`}</span></div>`).join("")}` : "";
+  const deals = x.deals.length ? `<div class="rs-sub">Large deals, last session</div>${x.deals.map((k) => `<div class="in-row"><span class="pill ${k.side === "BUY" ? "up" : "down"}">${esc(k.kind.toUpperCase())} ${esc(k.side || "")}</span>
+      <span>${esc(k.client || "")} · ${fmt(k.qty, 0)} @ ${fmt(k.price)}${k.value_cr ? ` · ${cr(k.value_cr)}` : ""}</span></div>`).join("")}` : "";
+  box.innerHTML = head + (flags ? `<div class="tk-warn">${flags}</div>` : "") + deliv + ev + deals
+    + (!flags && !dv && !ev && !deals ? `<div class="muted" style="font-size:13px">Nothing India-specific to flag for this stock right now.</div>` : "");
+}
 const skel = (h = 120) => `<div class="skeleton" style="height:${h}px"></div>`;
 const failed = (msg) => `<div class="muted" style="font-size:13px">${esc(msg)}</div>`;
 

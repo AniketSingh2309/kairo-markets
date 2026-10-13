@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import os
 import datetime as dt
 import time
 from collections import Counter
 from typing import Any
 
 import pytest
+
+# The suite runs in single-user mode (no log-in); tests/test_accounts.py switches accounts on itself.
+os.environ.setdefault("KAIRO_AUTH", "off")
 
 from core.clock import fixed_clock
 from core.config import Settings

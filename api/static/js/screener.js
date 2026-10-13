@@ -1,6 +1,7 @@
 // Screener: scan a universe, filter with presets, sort any column.
 import { $, esc, api, fmt, money, pctTxt, tone, symHtml, store, navigate, universeCatalog, universeOptions, validUniverse, logoHtml, lastSeen } from "./core.js";
 import { getWatchlist } from "./markets.js";
+import { initQuery, showQuery } from "./query.js";
 
 const PRESETS = [
   ["all", "All", () => true],
@@ -96,8 +97,14 @@ export async function initScreener() {
     render();
   };
   $("#scrSearch").oninput = (e) => { X.q = e.target.value; render(); };
+  $("#scrMode").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; X.mode = b.dataset.m; store.set("kairo-screen-mode", X.mode); showScreener(); };
+  await initQuery(X.universes);
 }
 export async function showScreener() {
+  X.mode = X.mode || store.get("kairo-screen-mode", "presets");
+  [...$("#scrMode").children].forEach((b) => b.classList.toggle("on", b.dataset.m === X.mode));
+  $("#scrPresetsView").hidden = X.mode === "query"; $("#scrQuery").hidden = X.mode !== "query";
+  if (X.mode === "query") { showQuery(); return; }
   render(); load();
   X.universes = await universeCatalog();  // counts fill in once the lists have downloaded
   $("#scrUniverse").innerHTML = universeOptions(X.universes, X.universe, MINE);

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import math
 from functools import lru_cache
 from typing import Any
 
@@ -17,6 +18,7 @@ from api import deps
 from api.live import get_live_provider
 from core import options_math as om
 from core import strategy as st
+from core import wizard as wz
 from core.store import Store
 from tools.errors import ToolError
 from tools.models import normalize_symbol
@@ -114,6 +116,8 @@ class OiRecorder:
         if session_open() and asyncio.get_running_loop().time() - self.last.get(key, -1e9) >= SNAPSHOT_EVERY_S - 30:
             self.last[key] = asyncio.get_running_loop().time()
             t = data["totals"]
+            if data["expiry"] == (data.get("expiries") or [data["expiry"]])[0] and (iv := atm_iv(data)) is not None:
+                store.save_iv(data["symbol"], dt.datetime.now(IST).date().isoformat(), iv)
             store.add_oi_snapshot({"symbol": data["symbol"], "expiry": data["expiry"], "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                                    "spot": data.get("spot"), "ce_oi": t["ce_oi"], "pe_oi": t["pe_oi"], "pcr": t["pcr"], "max_pain": t["max_pain"]})
 
@@ -138,6 +142,13 @@ class OiRecorder:
 RECORDER = OiRecorder()
 
 
+def atm_iv(data: dict[str, Any]) -> float | None:
+    """Average of the call and put IV at the at-the-money strike, in % (NSE reports 0 when it has none)."""
+    row = next((r for r in data["rows"] if r["strike"] == data.get("atm")), None)
+    ivs = [x for x in ((row or {}).get("ce") or {}, (row or {}).get("pe") or {}) if x.get("iv")]
+    return round(sum(x["iv"] for x in ivs) / len(ivs), 2) if ivs else None
+
+
 async def vix(provider: Any) -> dict[str, Any] | None:
     try:
         q = await deps.quote("^INDIAVIX", provider)
@@ -157,7 +168,7 @@ def _check(symbol: str, expiry: str | None) -> str:
 @router.get("/chain")
 async def chain(symbol: str = Query(..., max_length=20), expiry: str | None = Query(None, max_length=11),
                 nse: NseClient = Depends(get_nse), provider=Depends(get_live_provider),
-                store: Store = Depends(deps.get_store)) -> dict[str, Any]:
+                store: Store = Depends(deps.get_shared_store)) -> dict[str, Any]:
     """One expiry's chain: per strike, calls and puts (LTP, change, OI, change in OI, volume, IV, bid/ask),
     with Greeks and OI build-up, plus India VIX."""
     symbol = _check(symbol, expiry)
@@ -172,7 +183,7 @@ async def chain(symbol: str = Query(..., max_length=20), expiry: str | None = Qu
 
 @router.get("/oi-history")
 async def oi_history(symbol: str = Query(..., max_length=20), expiry: str = Query(..., max_length=11),
-                     store: Store = Depends(deps.get_store)) -> dict[str, Any]:
+                     store: Store = Depends(deps.get_shared_store)) -> dict[str, Any]:
     """Today's recorded PCR, max pain, total OI and spot (every 5 minutes while Kairo runs in market hours)."""
     symbol = _check(symbol, expiry)
     today = dt.datetime.combine(dt.datetime.now(IST).date(), dt.time(0, 0), tzinfo=IST).astimezone(dt.timezone.utc)
@@ -277,3 +288,74 @@ async def strategy(body: StrategyIn, nse: NseClient = Depends(get_nse)) -> dict[
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return {"symbol": symbol, "expiry": data["expiry"], "spot": spot, "lot_size": lot, "days_to_expiry": round(T * 365, 2),
             "vol_used": round(vol * 100, 2), "legs": detail, "margin": st.short_option_margin(legs), **result}
+
+
+# ------------------------------------------------------------------------------------------ IV and the strategy wizard
+
+
+@router.get("/iv")
+async def iv_stats(symbol: str = Query(..., max_length=20), nse: NseClient = Depends(get_nse), provider=Depends(get_live_provider),
+                   store: Store = Depends(deps.get_shared_store)) -> dict[str, Any]:
+    """Is option premium cheap or expensive? ATM implied volatility against realised volatility and its own history,
+    plus India VIX's rank over the past year."""
+    symbol = _check(symbol, None)
+    data = await _call(nse.chain, symbol, None, ttl=5 if market_open() else 60)
+    iv = atm_iv(data)
+    if iv is not None:
+        store.save_iv(symbol, dt.datetime.now(IST).date().isoformat(), iv)
+    hv20 = hv60 = None
+    try:
+        h = await deps.history(yahoo_symbol(symbol), "1y", provider)
+        closes = [b.close for b in h.bars]
+        hv20, hv60 = wz.realised_vol(closes, 20), wz.realised_vol(closes, 60)
+    except ToolError:
+        pass
+    hist = [r["atm_iv"] for r in store.iv_history(symbol)]
+    rank, pct = wz.rank_and_percentile(iv, hist) if iv is not None and len(hist) >= 20 else (None, None)
+    vix_out = None
+    try:
+        vh = await deps.history("^INDIAVIX", "1y", provider)
+        vc = [b.close for b in vh.bars]
+        vr, vp = wz.rank_and_percentile(vc[-1], vc)
+        vix_out = {"value": vc[-1], "low_1y": min(vc), "high_1y": max(vc), "rank": vr, "percentile": vp}
+    except (ToolError, ValueError):
+        pass
+    use_rank = rank if rank is not None else (vix_out or {}).get("rank") if symbol in ("NIFTY", "BANKNIFTY", "FINNIFTY") else rank
+    return {"symbol": symbol, "expiry": data["expiry"], "atm_iv": iv, "hv20": hv20, "hv60": hv60,
+            "iv_hv": round(iv / hv20, 2) if iv and hv20 else None, "iv_rank": rank, "iv_percentile": pct, "iv_days": len(hist),
+            "vix": vix_out, "verdict": wz.iv_verdict(iv, hv20, use_rank),
+            "note": "IV rank and percentile need 20 days of readings, which Kairo records while it runs; India VIX history is used for index options until then."}
+
+
+class WizardIn(BaseModel):
+    symbol: str = Field(max_length=20)
+    expiry: str | None = Field(None, max_length=11)
+    view: str = Field(pattern="^(bullish|bearish|neutral|volatile)$")
+    target: float | None = Field(None, gt=0)
+
+
+@router.post("/wizard")
+async def wizard(body: WizardIn, nse: NseClient = Depends(get_nse)) -> dict[str, Any]:
+    """From a view to ranked strategies, each priced from the live chain and ready to open in the builder."""
+    symbol = _check(body.symbol, body.expiry)
+    data = await _call(nse.chain, symbol, body.expiry, ttl=5 if market_open() else 60)
+    spot = data.get("spot")
+    if not spot:
+        raise HTTPException(status_code=503, detail="no spot price for this underlying right now")
+    lot = await run_in_threadpool(nse.lot_size, symbol, data["expiry"]) or 1
+    T = om.years_to_expiry(dt.datetime.strptime(data["expiry"], "%d-%b-%Y").date(), dt.datetime.now(dt.timezone.utc))
+    vol = (atm_iv(data) or 15.0) / 100
+    move = spot * vol * math.sqrt(max(T, 1 / 365))
+    target = body.target or {"bullish": spot + move, "bearish": spot - move}.get(body.view, spot)
+    ivs = {}
+    for r in data["rows"]:
+        for key, kind in (("ce", "CE"), ("pe", "PE")):
+            g = om.side_greeks(kind, r.get(key), spot, r["strike"], T)
+            ivs[(r["strike"], kind)] = g["iv"] / 100 if g and g.get("iv") else None
+    try:
+        items = await run_in_threadpool(wz.build, body.view, spot, target, data["rows"], lot, T, vol, ivs)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return {"symbol": symbol, "expiry": data["expiry"], "spot": spot, "target": round(target, 2), "view": body.view, "lot_size": lot,
+            "days_to_expiry": round(T * 365, 2), "vol_used": round(vol * 100, 2), "expected_move": round(move, 2), "items": items,
+            "note": "Each strategy uses 1 lot per leg at the last traded premiums. Ranked by profit at your target per rupee of maximum loss; unlimited-risk strategies are listed last."}

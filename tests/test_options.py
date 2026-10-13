@@ -108,7 +108,7 @@ def test_options_api():
     from tools.providers.mock_provider import MockMarketDataProvider
     nse = fake_nse([])
     mock, store = MockMarketDataProvider(), Store(":memory:")
-    app.dependency_overrides.update({get_nse: lambda: nse, get_live_provider: lambda: mock, deps.get_store: lambda: store})
+    app.dependency_overrides.update({get_nse: lambda: nse, get_live_provider: lambda: mock, deps.get_store: lambda: store, deps.get_shared_store: lambda: store})
     try:
         client = TestClient(app)
         u = client.get("/options/underlyings").json()
@@ -193,7 +193,7 @@ def test_straddle_and_oi_history_endpoints():
     from core.store import Store
     from tools.providers.mock_provider import MockMarketDataProvider
     nse, store = fake_nse([]), Store(":memory:")
-    app.dependency_overrides.update({get_nse: lambda: nse, get_live_provider: lambda: MockMarketDataProvider(), deps.get_store: lambda: store})
+    app.dependency_overrides.update({get_nse: lambda: nse, get_live_provider: lambda: MockMarketDataProvider(), deps.get_store: lambda: store, deps.get_shared_store: lambda: store})
     RECORDER.ensure_running = lambda *a: None
     try:
         c = TestClient(app)
@@ -242,7 +242,7 @@ def test_strategy_endpoint():
     nse = fake_nse([])
     nse.lot_size = lambda symbol, expiry: 65
     app.dependency_overrides.update({get_nse: lambda: nse, get_live_provider: lambda: MockMarketDataProvider(),
-                                     deps.get_store: lambda: Store(":memory:")})
+                                     deps.get_store: lambda: Store(":memory:"), deps.get_shared_store: lambda: Store(":memory:")})
     try:
         c = TestClient(app)
         r = c.post("/options/strategy", json={"symbol": "NIFTY", "legs": [{"kind": "CE", "side": "BUY", "strike": 22600, "lots": 2},
